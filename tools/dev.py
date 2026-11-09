@@ -3,6 +3,7 @@ import sys
 import time
 import argparse
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -10,13 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT))
 from tools.workspace import SCRATCH, clean_scratch, extension_archive, prepare_scratch
-BLENDER_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"
-if not os.path.exists(BLENDER_PATH):
-    for p in [r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
-              r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe"]:
-        if os.path.exists(p):
+BLENDER_PATH = os.environ.get('DD_BLENDER')
+if not BLENDER_PATH:
+    candidates = [
+        r"/Applications/Blender.app/Contents/MacOS/Blender",
+        r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe",
+        r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
+        r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe",
+        shutil.which('blender'),
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
             BLENDER_PATH = p
             break
+    else:
+        raise SystemExit('Set DD_BLENDER to the Blender 5.2 executable.')
 
 def run_cmd(cmd, cwd=str(ROOT), desc=""):
     if desc:
