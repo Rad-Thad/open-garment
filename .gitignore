@@ -20,3 +20,4 @@ Thumbs.db
 htmlcov/
 dist/
 solver/target/
+devil_designer/wheels/

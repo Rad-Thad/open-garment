@@ -10,6 +10,12 @@ tags = ["Modeling", "Mesh", "Physics"]
 license = ["SPDX:GPL-3.0-or-later"]
 copyright = ["2026 Artbyo3", "2002-2026 Blender Authors"]
 blender_version_min = "5.2.0"
+platforms = ["macos-arm64", "windows-x64", "linux-x64"]
+wheels = [
+    "./wheels/garment_solver-0.1.0-cp311-abi3-macosx_11_0_arm64.whl",
+    "./wheels/garment_solver-0.1.0-cp311-abi3-win_amd64.whl",
+    "./wheels/garment_solver-0.1.0-cp311-abi3-manylinux_2_28_x86_64.whl",
+]
 
 [permissions]
 files = "Save and load garments and reference images"

@@ -17,7 +17,10 @@ permissions:
   actions: write
 
 jobs:
+  wheels:
+    uses: ./.github/workflows/solver.yml
   release:
+    needs: wheels
     runs-on: ubuntu-latest
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -59,6 +62,13 @@ jobs:
       - name: Install Blender-bundled numpy for headless build
         if: github.event_name == 'push' && steps.existing.outputs.skip != 'true'
         run: python -m pip install numpy
+
+      - name: Download solver wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: devil_designer/wheels
 
       - name: Build extension archive
         if: github.event_name == 'push' && steps.existing.outputs.skip != 'true'
