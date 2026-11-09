@@ -172,6 +172,8 @@ class Pattern:
     frozen: bool = False
     deactivated: bool = False
     strengthened: bool = False
+    allowance: float = 0.0
+    edge_allowances: dict = None
 
     @property
     def points(self): return [(v.x,v.y) for v in self.vertices]
@@ -300,7 +302,7 @@ class Document:
         return json.dumps(dict(version=4,preset=getattr(self,'preset','COTTON'),patterns=[dict(id=p.id,name=p.name,\
             vertices=[vertex_data(v) for v in p.vertices],paths=[dict(id=q.id,name=q.name,closed=q.closed,role=q.role,\
             vertices=[vertex_data(v) for v in q.vertices]) for q in p.paths],preset=p.preset,wrap_radius=p.wrap_radius,\
-            features=p.features,mesh_density=p.mesh_density,fabric_override=getattr(p,'fabric_override',False),placement_mode=p.placement_mode,arrangement=p.arrangement,panel_origin=p.panel_origin,**({'simulation':{key:getattr(p,key) for key in ('frozen','deactivated','strengthened') if getattr(p,key)}} if p.frozen or p.deactivated or p.strengthened else {})) for p in self.patterns],seams=[dict(id=s.id,a=vars(s.a),b=vars(s.b),reverse=s.reverse,\
+            features=p.features,mesh_density=p.mesh_density,fabric_override=getattr(p,'fabric_override',False),placement_mode=p.placement_mode,arrangement=p.arrangement,panel_origin=p.panel_origin,**({'allowance':getattr(p,'allowance',0.0)} if getattr(p,'allowance',0.0) else {}),**({'edge_allowances':getattr(p,'edge_allowances',None)} if getattr(p,'edge_allowances',None) else {}),**({'simulation':{key:getattr(p,key) for key in ('frozen','deactivated','strengthened') if getattr(p,key)}} if p.frozen or p.deactivated or p.strengthened else {})) for p in self.patterns],seams=[dict(id=s.id,a=vars(s.a),b=vars(s.b),reverse=s.reverse,\
             chain_a=[vars(e) for e in s.side(0)],chain_b=[vars(e) for e in s.side(1)],**({"shrink":s.shrink} if s.shrink else {}),**({"ease_side":s.ease_side} if s.ease_side else {}),**({"active":False} if not s.active else {})) for s in self.seams],\
             anchors=[vars(a) for a in self.anchors],uv_layout=self.uv_layout,**({'linked_pairs':self.linked_pairs} if self.linked_pairs else {}),**({'custom_presets':self.custom_presets} if getattr(self,'custom_presets',None) else {}),**({'elastics':self.elastics} if self.elastics else {}),**({'joins':self.joins} if self.joins else {}),**({'steam':self.steam} if self.steam else {})),separators=(',',':'),allow_nan=False)
 
@@ -326,6 +328,16 @@ class Document:
                 p.placement_mode=item.get('placement_mode','LAYOUT') if data['version']>=4 else 'LEGACY'
                 p.arrangement=item.get('arrangement') if data['version']>=4 else None
                 p.panel_origin=item.get('panel_origin') if data['version']>=4 else None
+                allowance=item.get('allowance',0.0)
+                if type(allowance) not in (int,float) or not math.isfinite(allowance) or allowance<0:raise ValueError('Invalid seam allowance.')
+                p.allowance=float(allowance)
+                edge_allowances=item.get('edge_allowances')
+                if edge_allowances is not None:
+                    if not isinstance(edge_allowances,dict):raise ValueError('Invalid seam allowance.')
+                    p.edge_allowances={}
+                    for key,value in edge_allowances.items():
+                        if not isinstance(key,str) or type(value) not in (int,float) or not math.isfinite(value) or value<0:raise ValueError('Invalid seam allowance.')
+                        p.edge_allowances[key]=float(value)
                 state=item.get('simulation',{})
                 if not isinstance(state,dict) or set(state)-{'frozen','deactivated','strengthened'} or any(type(flag) is not bool for flag in state.values()):raise ValueError('Invalid piece simulation state.')
                 for key,flag in state.items():setattr(p,key,flag)
@@ -443,6 +455,9 @@ class Document:
                     raise ValueError('Cut panel bounds must contain four finite numbers.')
                 if origin['bounds'][0]>=origin['bounds'][2] or origin['bounds'][1]>=origin['bounds'][3]:raise ValueError('Cut panel bounds must have positive size.')
             if not math.isfinite(p.wrap_radius) or p.wrap_radius<0: raise ValueError('Invalid wrap radius.')
+            if getattr(p,'edge_allowances',None):
+                outer_ids={v.id for v in p.vertices}
+                p.edge_allowances={key:value for key,value in p.edge_allowances.items() if key in outer_ids}
             for v in p.vertices: identity(v.id)
             outer=p.outline();validate_polygon(outer)
             holes=[]
@@ -1931,6 +1946,34 @@ class Session(ConstructionMixin):
         self.commit(lambda:self.document.patterns.append(new))
         self.clear_selection();self.selected_patterns.add(new.id)
         self.selected,self.path,self.corner=new.id,'OUTER',None
+
+    def set_allowance(self,distance):
+        p=self.document.find(self._selected)
+        if p is None:raise ValueError('Select a pattern to set its seam allowance.')
+        if not math.isfinite(distance) or distance<0:raise ValueError('Seam allowance must be a non-negative number.')
+        def apply(): p.allowance=distance
+        return self.commit(apply)
+
+    def set_garment_allowance(self,distance):
+        if not math.isfinite(distance) or distance<0:raise ValueError('Seam allowance must be a non-negative number.')
+        def apply():
+            for p in self.document.patterns:
+                p.allowance=distance
+                p.edge_allowances=None
+        return self.commit(apply)
+
+    def set_edge_allowance(self,edge,distance):
+        p=self.document.find(edge.pattern)
+        if p is None:raise ValueError('The pattern no longer exists.')
+        if distance is not None and (not math.isfinite(distance) or distance<0):raise ValueError('Seam allowance must be a non-negative number.')
+        def apply():
+            overrides=dict(getattr(p,'edge_allowances',None) or {})
+            if distance is None:
+                overrides.pop(edge.start,None)
+            else:
+                overrides[edge.start]=distance
+            p.edge_allowances=overrides or None
+        return self.commit(apply)
 
     def offset_path(self,distance):
         p=self.document.find(self._selected)

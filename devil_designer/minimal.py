@@ -29,6 +29,11 @@ def text_unscaled_width(text, size=11):
 
 
 DENSITY = {'Coarse': .04, 'Standard': .02, 'Fine': .01, 'Ultra': .005}
+def allowance_label(value, labels):
+    for label in labels:
+        if abs(value - float(label.split()[0]) / 100) < 1e-6:
+            return label
+    return f'{value * 100:g} cm'
 def heading_to(start, point, rect, margin):
     edge = rect.x if rect.x >= start[0] else rect.x + rect.w
     run, step = edge - start[0], point[0] - start[0]
@@ -556,6 +561,7 @@ class MinimalCards:
             from .piece_states import label
             simulation_label = label(pattern).replace(' · Strengthened ×4', ' +4×')
             rows.append(('MENU', 'PIECE_SIMULATION_MENU', 'Simulation', simulation_label or 'Normal'))
+            rows.append(('CHOICES', 'Seam allowance', ('PIECE_ALLOWANCE', ('0 cm', '0.5 cm', '1 cm', '1.5 cm', '2 cm'), allowance_label(getattr(pattern, 'allowance', 0.0), ('0 cm', '0.5 cm', '1 cm', '1.5 cm', '2 cm')))))
             rows.append(('MENU', 'PIECE_PLACEMENT_MENU', 'Placement', ('Flat' if pattern.arrangement['flat'] else 'Wrap') if pattern.arrangement else '2D layout'))
             rows.append(('MENU', 'PIECE_CLONE_MENU', 'Clone', ''))
             rows.append(('MENU', 'TRANSFORM_MENU', 'Transform', ''))
@@ -595,6 +601,7 @@ class MinimalCards:
             rows.append(('MENU', 'MENU_GARMENT', 'Garment settings', getattr(doc, 'preset', 'COTTON').title()))
             rows.append(('CHOICES', 'Mesh density', ('INSP_GARMENT_DENSITY', DENSITY, self.named_choice(scene.dd_spacing, DENSITY))))
             rows.append(('CHOICES', 'Quality', ('INSP_QUALITY', QUALITY, self.named_choice(scene.dd_quality, QUALITY))))
+            rows.append(('CHOICES', 'Seam allowance (all)', ('INSP_ALLOWANCE', ('0 cm', '0.5 cm', '1 cm', '1.5 cm', '2 cm'), '')))
             rows.append(('CHOICES', 'Solver', ('INSP_SOLVER', ('GPU', 'Nodes'), 'GPU' if scene.dd_solver == 'GPU' else 'Nodes')))
             rows.append(('CHOICES', 'Skin offset', ('INSP_SKIN', SKIN_OFFSET, self.named_choice(scene.dd_skin_offset, SKIN_OFFSET))))
             rows.append(('CHOICES', 'Friction', ('INSP_FRICTION', FRICTION, self.named_choice(scene.dd_friction, FRICTION))))
@@ -633,6 +640,11 @@ class MinimalCards:
                     ('PAIR_ACTIONS', 'BEND_EDGE', 'SPLIT', 'Bend', 'Split'),
                     ('CHOICES', 'Split into', ('SPLIT_INTO', SPLIT_PARTS, '')),
                     ('PAIR_ACTIONS', 'UNFOLD', 'MIRROR_SEW', 'Unfold', 'Mirror')]
+            edge_override = None
+            if edge and pattern:
+                overrides = getattr(pattern, 'edge_allowances', None)
+                edge_override = overrides.get(edge.start) if overrides else None
+            rows.append(('CHOICES', 'Allowance', ('EDGE_ALLOWANCE', ('Piece', '0 cm', '0.5 cm', '1 cm', '2 cm', '3 cm'), 'Piece' if edge_override is None else allowance_label(edge_override, ('0 cm', '0.5 cm', '1 cm', '2 cm', '3 cm')))))
             if edge and any(item.full() == edge.full() for seam in doc.seams for side in (0, 1) for item in seam.side(side)):
                 rows.append(('MERGE_PIECES', 'Merge sewn pieces', ''))
             if pattern and any(feature.get('type') == 'FOLD' for feature in pattern.features):
@@ -1335,6 +1347,19 @@ class MinimalCards:
             distance = float(key.removeprefix('OFFSET_OUTLINE_').split()[0]) / 100
             self.run_edit(lambda: self.session.offset(distance), 'Offset copy added.')
             self.card_kind = None
+        elif key.startswith('PIECE_ALLOWANCE_'):
+            distance = float(key.removeprefix('PIECE_ALLOWANCE_').split()[0]) / 100
+            self.run_edit(lambda: self.session.set_allowance(distance), 'Seam allowance set.')
+        elif key.startswith('INSP_ALLOWANCE_'):
+            distance = float(key.removeprefix('INSP_ALLOWANCE_').split()[0]) / 100
+            self.run_edit(lambda: self.session.set_garment_allowance(distance), 'Seam allowance applied to every piece.')
+        elif key.startswith('EDGE_ALLOWANCE_'):
+            edge = self.session.segment
+            if key == 'EDGE_ALLOWANCE_Piece':
+                self.run_edit(lambda: self.session.set_edge_allowance(edge, None), 'Edge uses the piece allowance.')
+            else:
+                distance = float(key.removeprefix('EDGE_ALLOWANCE_').split()[0]) / 100
+                self.run_edit(lambda: self.session.set_edge_allowance(edge, distance), 'Edge allowance set.')
         elif key in {'SELECT_BOX', 'SELECT_LASSO'}:
             self.choose_tool('SELECT')
             self.armed_selection = key

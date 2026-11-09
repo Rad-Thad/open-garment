@@ -40,6 +40,9 @@ def scale_document(doc,factor,vertical=None):
                 if v.incoming is not None:v.incoming=(v.incoming[0]*factor,v.incoming[1]*vertical)
                 if v.outgoing is not None:v.outgoing=(v.outgoing[0]*factor,v.outgoing[1]*vertical)
         p.wrap_radius*=factor
+        if getattr(p,'allowance',0.0): p.allowance*=max(factor,vertical)
+        if getattr(p,'edge_allowances',None):
+            p.edge_allowances={key:value*max(factor,vertical) for key,value in p.edge_allowances.items()}
         if p.panel_origin:
             left,bottom,right,top=p.panel_origin['bounds']
             p.panel_origin['bounds']=[left*factor,bottom*vertical,right*factor,top*vertical]

@@ -426,6 +426,7 @@ class Renderer:
 
                 ed.measurement_rects = []
                 from .linked_editing import pair_for
+                from . import production
                 hovered_edge = ed.design_hit_edge() if ed.tool == 'SELECT' and not ed.gesture and not ed.card_kind else None
                 twin_pairs = list(getattr(ed.session.document, 'linked_pairs', []))
                 piece_labels=[]
@@ -456,6 +457,10 @@ class Renderer:
                     color = (.70, .76, .82)
                     opacity = .10 if selected else .055
                     self.fill_pattern(pat.id, world, outline, (*color, opacity), holes, view, c)
+                    cut = production.cut_outline(ed.session.document, pat)
+                    if cut != world:
+                        cut_screen = [view.screen(point, c) for point in cut]
+                        self.lines(cut_screen + cut_screen[:1], TEXT_SUB, 1, strip=True)
 
                     for path, nodes, closed, role in pat.loops():
                         points = world if path == 'OUTER' else pat.path(path).outline()
