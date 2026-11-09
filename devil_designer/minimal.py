@@ -595,6 +595,7 @@ class MinimalCards:
             rows.append(('MENU', 'MENU_GARMENT', 'Garment settings', getattr(doc, 'preset', 'COTTON').title()))
             rows.append(('CHOICES', 'Mesh density', ('INSP_GARMENT_DENSITY', DENSITY, self.named_choice(scene.dd_spacing, DENSITY))))
             rows.append(('CHOICES', 'Quality', ('INSP_QUALITY', QUALITY, self.named_choice(scene.dd_quality, QUALITY))))
+            rows.append(('CHOICES', 'Solver', ('INSP_SOLVER', ('GPU', 'Nodes'), 'GPU' if scene.dd_solver == 'GPU' else 'Nodes')))
             rows.append(('CHOICES', 'Skin offset', ('INSP_SKIN', SKIN_OFFSET, self.named_choice(scene.dd_skin_offset, SKIN_OFFSET))))
             rows.append(('CHOICES', 'Friction', ('INSP_FRICTION', FRICTION, self.named_choice(scene.dd_friction, FRICTION))))
             rows.append(('INSP_FIT', 'Fit design', 'Home'))
@@ -1306,6 +1307,8 @@ class MinimalCards:
             scene.dd_skin_offset = SKIN_OFFSET[key.removeprefix('INSP_SKIN_')]
         elif key.startswith('INSP_FRICTION_'):
             scene.dd_friction = FRICTION[key.removeprefix('INSP_FRICTION_')]
+        elif key.startswith('INSP_SOLVER_'):
+            scene.dd_solver = 'GPU' if key == 'INSP_SOLVER_GPU' else 'NODES'
         elif key.startswith('KEEP_FACES_'):
             scene.dd_keep_quads = key == 'KEEP_FACES_Quads'
         elif key.startswith('SEAM_ACTIVE_'):

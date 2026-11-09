@@ -11,7 +11,6 @@ GRAB_RADIUS = .05
 RADIUS_RANGE = (.015, .15)
 PULL = 'PULL'
 PUSH = 'PUSH'
-LIVE_VERTEX_BUDGET = 14000
 
 
 def evaluated_points(context, source):
@@ -75,7 +74,7 @@ class ClothGrab:
         xpbd.set_input(self.source, 'Grab Radius', self.radius / unit)
         xpbd.set_input(self.source, 'Grab Index', vertex)
         self.quality = xpbd.input_slot(self.source, 'Inner Substeps').value
-        live = max(xpbd.MIN_SUBSTEPS, LIVE_VERTEX_BUDGET // len(self.source.data.vertices))
+        live = max(xpbd.MIN_SUBSTEPS, xpbd.vertex_budget(self.source) // len(self.source.data.vertices))
         xpbd.set_input(self.source, 'Inner Substeps', min(self.quality, live))
         self.source.update_tag()
 

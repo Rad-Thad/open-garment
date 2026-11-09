@@ -2,7 +2,7 @@ import bmesh
 import bpy
 import numpy as np
 
-from . import seam_shrink, xpbd_nodes
+from . import gpu_backend, seam_shrink, xpbd_nodes
 from .presets import resolve_preset
 
 MODIFIER = 'DD XPBD'
@@ -13,6 +13,7 @@ SEAM_COMPLIANCE = 0.0
 PIN_COMPLIANCE = 0.0
 TACK_COMPLIANCE = 0.0
 SHRINK_GAIN = 1.9
+LIVE_VERTEX_BUDGET = 14000
 SHRINK_RINGS = 8
 SHRINK_FALLOFF = .9
 PIECE_SPACING = 100.0
@@ -38,12 +39,18 @@ def modifier(obj):
 
 
 def input_slot(obj, name):
+    if gpu_backend.owns(obj):
+        return gpu_backend.Slot(obj, name)
     mod = modifier(obj)
     return getattr(mod.properties.inputs, xpbd_nodes.input_identifier(mod.node_group, name))
 
 
 def set_input(obj, name, value):
     input_slot(obj, name).value = value
+
+
+def vertex_budget(obj):
+    return gpu_backend.LIVE_VERTEX_BUDGET if gpu_backend.owns(obj) else LIVE_VERTEX_BUDGET
 
 
 def write(mesh, name, kind, domain, values):
@@ -183,6 +190,8 @@ def restart_from_pose(obj):
     edges = edges.reshape(-1, 2)
     write(mesh, 'dd_seam_start', 'FLOAT', 'EDGE', np.linalg.norm(start[edges[:, 0]] - start[edges[:, 1]], axis=1))
     write(mesh, 'dd_pin_target', 'FLOAT_VECTOR', 'POINT', start)
+    if gpu_backend.owns(obj):
+        gpu_backend.invalidate(obj)
 
 
 def hold(obj, vertices):
@@ -198,6 +207,8 @@ def hold(obj, vertices):
     mesh.attributes['dd_tacked'].data.foreach_get('value', tacked)
     tacked[list(vertices)] = False
     write(mesh, 'dd_tacked', 'BOOLEAN', 'POINT', tacked)
+    if gpu_backend.owns(obj):
+        gpu_backend.invalidate(obj)
 
 
 def strengthen(obj, vertices, multiplier):
@@ -220,6 +231,8 @@ def strengthen(obj, vertices, multiplier):
     mesh.attributes['dd_bend_compliance'].data.foreach_get('value', bending)
     bending[chosen] /= multiplier ** 2
     write(mesh, 'dd_bend_compliance', 'FLOAT', 'POINT', bending)
+    if gpu_backend.owns(obj):
+        gpu_backend.invalidate(obj)
 
 
 def refine(context, obj):
@@ -367,8 +380,12 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     write(mesh, 'dd_tack_vertices', 'FLOAT_VECTOR', 'POINT', surface)
     write(mesh, 'dd_tack_weights', 'FLOAT_VECTOR', 'POINT', shares)
     write(mesh, 'dd_pin_compliance', 'FLOAT', 'POINT', np.where(tacked, TACK_COMPLIANCE, PIN_COMPLIANCE))
-    mod = obj.modifiers.new(MODIFIER, 'NODES')
-    mod.node_group = xpbd_nodes.cloth_group()
+    if scene.dd_solver == 'GPU':
+        gpu_backend.prepare(obj)
+        mod = None
+    else:
+        mod = obj.modifiers.new(MODIFIER, 'NODES')
+        mod.node_group = xpbd_nodes.cloth_group()
     obj.use_simulation_cache = False
     handle = bpy.data.objects.new('DD Grab Handle', None)
     garment_collection(scene).objects.link(handle)
@@ -378,10 +395,17 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     tag_generated(handle, 'collider')
     collider = bake_collider(context)
     set_input(obj, 'Body', collider)
-    set_input(obj, 'Body Shell', bake_shell(context, collider))
+    if mod is not None:
+        set_input(obj, 'Body Shell', bake_shell(context, collider))
     set_input(obj, 'Gravity', tuple(component / unit for component in scene.gravity))
     set_input(obj, 'Inner Substeps', LIVE_SUBSTEPS)
     set_input(obj, 'Grab Stride', GRAB_STRIDE / unit)
     set_input(obj, 'Grab Reach', GRAB_REACH / unit)
+    if mod is None:
+        set_input(obj, 'Grab Index', -1)
+        set_input(obj, 'Grab Radius', .05)
+        set_input(obj, 'Iterations', gpu_backend.ITERATIONS)
+        set_input(obj, 'Seam Seconds', gpu_backend.SEAM_SECONDS)
+        set_input(obj, 'Damping', gpu_backend.DAMPING)
     obj.update_tag()
     return mod

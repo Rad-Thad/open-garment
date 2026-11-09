@@ -70,7 +70,7 @@ for pf in py_files:
     ScopeVisitor().visit(tree)
 
 from tools.build import build_extension
-zip_path = build_extension()
+zip_path = build_extension(local=True)
 check(zip_path.is_file(), f'packaged extension zip exists ({zip_path.name})')
 ext_root = ROOT / 'scratch' / 'ext_load_check'
 shutil.rmtree(ext_root, ignore_errors=True)

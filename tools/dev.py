@@ -27,11 +27,13 @@ if not BLENDER_PATH:
     else:
         raise SystemExit('Set DD_BLENDER to the Blender 5.2 executable.')
 
-def run_cmd(cmd, cwd=str(ROOT), desc=""):
+def run_cmd(cmd, cwd=str(ROOT), desc="", env=None):
     if desc:
         print(f"--> {desc}...")
     t0 = time.time()
-    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', DD_SOLVER='NODES')
+    if env:
+        environment.update(env)
     res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=environment)
     dt = time.time() - t0
     gui_test = any(Path(argument).name == 'run_blender_gui.py' for argument in cmd)
@@ -64,6 +66,12 @@ def do_tests():
                        desc=f"Blender Background: {t}"):
             return False
 
+    if not run_cmd([sys.executable, "tools/build_solver.py"], desc="Build GPU solver wheel"):
+        return False
+    if not run_cmd([BLENDER_PATH, "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_gpu.py"],
+                   desc="Blender Background: blender_gpu.py", env={'DD_SOLVER': 'GPU'}):
+        return False
+
     print("\n=== RUNNING REAL-BLENDER IN-ENGINE GUI SUITES ===")
     for t in ["gui_preview", "gui_silhouette", "gui_design", "gui_fast_flow", "gui_library", "gui_arrangement", "gui_arrangement_display", "gui_fit_map", "gui_avatar_field", "gui_viewport_sewing", "gui_core_workflow", "gui_editor_release", "gui_live_grab", "gui_matrix"]:
         if not run_cmd([BLENDER_PATH, "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", t],
@@ -76,7 +84,7 @@ def do_tests():
 def do_build():
     print("\n=== BUILDING & VALIDATING EXTENSION ===")
     
-    if not run_cmd([sys.executable, "tools/build.py"], desc="Package extension zip"):
+    if not run_cmd([sys.executable, "tools/build.py", "--local"], desc="Package extension zip"):
         return False
         
     zip_path = extension_archive()

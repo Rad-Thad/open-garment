@@ -343,6 +343,8 @@ def signature(scene,panels):
     selection=layering.wear_over_selection(scene)
     if selection:
         data.append(selection)
+    if getattr(scene, 'dd_solver', 'NODES') != 'NODES':
+        data.append(scene.dd_solver)
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 

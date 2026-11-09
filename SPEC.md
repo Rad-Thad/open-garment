@@ -157,8 +157,8 @@ preserve valid pair membership. Designs without pair records remain unchanged.
 
 ### Simulation, finalize, and garment library
 
-- Simulate with the Geometry Nodes XPBD system in `xpbd.py` and `xpbd_nodes.py`.
-  It is the only simulation engine. The zone runs in realtime mode at a fixed
+- Simulate with the Geometry Nodes XPBD system in `xpbd.py` and `xpbd_nodes.py`, or the GPU solver in `gpu_backend.py` and `solver/`.
+  Two simulation backends exist: GPU (`gpu_backend.py`, `solver/`) and Geometry Nodes XPBD (`xpbd.py`, `xpbd_nodes.py`, `xpbd_live.py`). `scene.dd_solver` selects one; there is no automatic fallback. The zone runs in realtime mode at a fixed
   30 fps clock, so playback runs until stopped and accepts live input. The
   artist's frame rate and timeline are restored on Keep and Reset.
 - Fabrics differ through bending stiffness. Linen, Denim and Leather add links across

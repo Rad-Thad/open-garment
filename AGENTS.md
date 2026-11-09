@@ -36,7 +36,7 @@
 ## ARCHITECTURE & IMPLEMENTATION PRINCIPLES
 1. **Garment & Simulation Math Integrity**:
    - Initial built-panel position and orientation in garment.build_panels and arrangement.arrange are editable, and arrangement.py may implement bounding volumes and arrangement points; placement.py, tack_binding.py and meshing output remain locked.
-   - The one simulation engine is the Geometry Nodes XPBD system in `xpbd.py`, `xpbd_nodes.py` and `xpbd_live.py`. Do not add a second solver or a fallback.
+   - Two simulation backends exist: GPU (`gpu_backend.py`, `solver/`) and Geometry Nodes XPBD (`xpbd.py`, `xpbd_nodes.py`, `xpbd_live.py`). `scene.dd_solver` selects one; there is no automatic fallback.
    - Strictly locked and protected: meshing output and Delaunay CDT math in `meshing.py`, and 3D placement math in `placement.py` and `tack_binding.py`.
    - Now editable: the pattern-editing code in `core.py` and `construction.py` (specifically pattern selection state, multi-piece and point selection, point and handle movement and editing, segment splitting, and internal/boundary path cutting). Downstream meshing output and placement math must remain untouched and verified by automated meshing regression tests.
 2. **UI & Rendering Architecture**:

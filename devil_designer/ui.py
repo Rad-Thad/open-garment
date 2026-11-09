@@ -1,3 +1,5 @@
+import os
+
 import bpy
 from bpy.app.handlers import persistent
 from .editor import DD_OT_pattern_editor, close_active
@@ -20,7 +22,7 @@ def on_load(_):
 
 classes = (DD_OT_pattern_editor,DD_OT_viewport_seam_action)+CLASSES
 PROPERTIES = ('dd_document','dd_history','dd_collection','dd_avatar','dd_spacing','dd_clearance',
-              'dd_quality','dd_self_collision','dd_pin_top','dd_weld_distance','dd_thickness','dd_skin_offset','dd_friction','dd_keep_quads',
+              'dd_quality','dd_self_collision','dd_pin_top','dd_weld_distance','dd_thickness','dd_skin_offset','dd_friction','dd_keep_quads','dd_solver',
               'dd_ui_rect','dd_reference_visible','dd_reference_view',
               'dd_reference_opacity','dd_reference_x','dd_reference_y','dd_reference_placed',
               'dd_point_x','dd_point_y','dd_segment_length',
@@ -78,10 +80,14 @@ def register():
     Scene.dd_skin_offset = bpy.props.FloatProperty(name='Skin offset (m)',default=.003,min=.0005,max=.02,precision=4)
     Scene.dd_friction = bpy.props.FloatProperty(name='Body friction',default=.3,min=0,max=1,precision=2)
     Scene.dd_keep_quads = bpy.props.BoolProperty(name='Keep as quads',default=False)
+    Scene.dd_solver = bpy.props.EnumProperty(name='Solver',items=[
+        ('GPU','GPU','Metal/Vulkan GPU solver'),('NODES','Nodes','Geometry Nodes XPBD')],default=os.environ.get('DD_SOLVER','GPU'))
     for cls in classes:
         bpy.utils.register_class(cls)
     live_panels.register()
     arrangement_controls.register()
+    from . import gpu_backend
+    gpu_backend.register()
     bpy.app.handlers.load_pre.append(on_load)
     bpy.types.VIEW3D_MT_view.append(launch_menu)
     config=bpy.context.window_manager.keyconfigs.addon
@@ -95,6 +101,8 @@ def unregister():
     from . import live_panels,arrangement_controls
     arrangement_controls.unregister()
     live_panels.unregister()
+    from . import gpu_backend
+    gpu_backend.unregister()
     close_active()
     from . import tracing
     tracing.unregister()
