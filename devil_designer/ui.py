@@ -22,7 +22,7 @@ def on_load(_):
 
 classes = (DD_OT_pattern_editor,DD_OT_viewport_seam_action)+CLASSES
 PROPERTIES = ('dd_document','dd_history','dd_collection','dd_avatar','dd_spacing','dd_clearance',
-              'dd_quality','dd_self_collision','dd_pin_top','dd_weld_distance','dd_thickness','dd_skin_offset','dd_friction','dd_keep_quads','dd_solver',
+              'dd_quality','dd_self_collision','dd_pin_top','dd_weld_distance','dd_thickness','dd_skin_offset','dd_friction','dd_keep_quads','dd_solver','dd_size',
               'dd_ui_rect','dd_reference_visible','dd_reference_view',
               'dd_reference_opacity','dd_reference_x','dd_reference_y','dd_reference_placed',
               'dd_point_x','dd_point_y','dd_segment_length',
@@ -49,6 +49,8 @@ def register():
     for key,default,low,high in [('dd_point_x',0,-100,100),('dd_point_y',0,-100,100),('dd_segment_length',.1,.0001,100),
         ('dd_sew_a0',0,0,1),('dd_sew_a1',1,0,1),('dd_sew_b0',0,0,1),('dd_sew_b1',1,0,1)]:\
         setattr(Scene,key,bpy.props.FloatProperty(default=default,min=low,max=high,precision=4))
+    Scene.dd_grade_x = bpy.props.FloatProperty(name='Grade X',default=0,min=-.5,max=.5,precision=4)
+    Scene.dd_grade_y = bpy.props.FloatProperty(name='Grade Y',default=0,min=-.5,max=.5,precision=4)
     Scene.dd_free_sewing=bpy.props.BoolProperty(default=False)
     Scene.dd_sew_reverse=bpy.props.BoolProperty(default=True)
     Scene.dd_internal_mode=bpy.props.BoolProperty(default=False)
@@ -82,6 +84,7 @@ def register():
     Scene.dd_keep_quads = bpy.props.BoolProperty(name='Keep as quads',default=False)
     Scene.dd_solver = bpy.props.EnumProperty(name='Solver',items=[
         ('GPU','GPU','Metal/Vulkan GPU solver'),('NODES','Nodes','Geometry Nodes XPBD')],default=os.environ.get('DD_SOLVER','GPU'))
+    Scene.dd_size = bpy.props.StringProperty(default='')
     for cls in classes:
         bpy.utils.register_class(cls)
     live_panels.register()

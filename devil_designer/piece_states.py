@@ -61,8 +61,8 @@ def synchronize_metadata(context, document, panels):
     return True
 
 
-def required(document):
-    return any(getattr(pattern, flag) for pattern in document.patterns for flag in FLAGS)
+def required(document, size=''):
+    return any(getattr(pattern, flag) for pattern in document.patterns for flag in FLAGS) or (size and size != getattr(document, 'base_size', '') and size in (getattr(document, 'sizes', []) or []))
 
 
 def piece_indices(obj):
@@ -150,7 +150,7 @@ def compile_run(context, document):
     import bpy
     from . import garment, ui, xpbd
     scene = context.scene
-    active = active_document(document)
+    active = active_document(document).graded(scene.dd_size)
     if not active.patterns:
         raise ValueError('All pieces are deactivated. Activate at least one piece to simulate.')
     panels = garment.generated(scene, 'panel')
@@ -159,7 +159,7 @@ def compile_run(context, document):
     if not compatible:
         panels = garment.build_panels(context)
         document = garment.document(scene)
-        active = active_document(document)
+        active = active_document(document).graded(scene.dd_size)
     marker = garment.signature(scene, panels)
     old = garment.generated(scene, 'simulation')
     if old and old[0].get('dd_signature') == marker:

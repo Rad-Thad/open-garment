@@ -62,7 +62,7 @@ PLACEMENT_DISTANCE = {'Body': None, '1 cm': .01, '2 cm': .02, '5 cm': .05}
 PLACEMENT_OVERLAP = {'Off': (False, 1), 'Right on top': (True, 1), 'Left on top': (True, -1)}
 IMAGE_OPACITY = {'Light': .2, 'Medium': .35, 'Strong': .6}
 SUBMENUS = {'TRANSFORM_MENU': 'TRANSFORM_MENU', 'PIECE_PLACEMENT_MENU': 'PIECE_PLACEMENT',
-            'PIECE_CLONE_MENU': 'PIECE_CLONE', 'STARTERS_MENU': 'STARTERS'}
+            'PIECE_CLONE_MENU': 'PIECE_CLONE', 'STARTERS_MENU': 'STARTERS', 'SIZES_MENU': 'SIZES'}
 
 
 def minimal_layout(layout, pending=False, confirmation=False, playing=False, kept=False, stale=False):
@@ -603,6 +603,7 @@ class MinimalCards:
             rows.append(('CHOICES', 'Quality', ('INSP_QUALITY', QUALITY, self.named_choice(scene.dd_quality, QUALITY))))
             rows.append(('CHOICES', 'Seam allowance (all)', ('INSP_ALLOWANCE', ('0 cm', '0.5 cm', '1 cm', '1.5 cm', '2 cm'), '')))
             rows.append(('CHOICES', 'Solver', ('INSP_SOLVER', ('GPU', 'Nodes'), 'GPU' if scene.dd_solver == 'GPU' else 'Nodes')))
+            rows.append(('MENU', 'SIZES_MENU', 'Sizes', scene.dd_size or 'Base'))
             rows.append(('CHOICES', 'Skin offset', ('INSP_SKIN', SKIN_OFFSET, self.named_choice(scene.dd_skin_offset, SKIN_OFFSET))))
             rows.append(('CHOICES', 'Friction', ('INSP_FRICTION', FRICTION, self.named_choice(scene.dd_friction, FRICTION))))
             rows.append(('INSP_FIT', 'Fit design', 'Home'))
@@ -613,6 +614,16 @@ class MinimalCards:
                     ('PAIR_ACTIONS', 'STARTER_JACKET', 'STARTER_DRESS', 'Jacket', 'Dress'),
                     ('PAIR_ACTIONS', 'STARTER_SKIRT', 'STARTER_PANTS', 'Skirt', 'Pants'),
                     ('DEMO_PANEL', 'Create panel', '')]
+        elif kind == 'SIZES':
+            title = 'Sizes'
+            rows = []
+            for name in list(getattr(doc, 'sizes', []) or []):
+                state = 'Active' if scene.dd_size == name else 'Base' if name == getattr(doc, 'base_size', '') else ''
+                rows.append((f'SET_SIZE_{name}', name, state))
+            rows.append(('ADD_SIZE', 'Add size', ''))
+            if scene.dd_size:
+                rows.append(('REMOVE_SIZE', 'Remove active size', ''))
+            rows.append(('CHOICES', 'Scale active size', ('GRADE_SCALE', ('-4%', '-2%', '+2%', '+4%'), '')))
         elif kind == 'POINT':
             title = 'Point'
             v = None
@@ -627,6 +638,9 @@ class MinimalCards:
                     ('SLIDER', 'dd_point_y', 'Y position'),
                     ('CHOICES', 'Round corner', ('ROUND_CORNER', ('1 cm', '2 cm', '5 cm'), '')),
                     ('MENU', 'TRANSFORM_MENU', 'Transform', '')]
+            if scene.dd_size and scene.dd_size != getattr(doc, 'base_size', ''):
+                rows.append(('SLIDER', 'dd_grade_x', 'Grade X'))
+                rows.append(('SLIDER', 'dd_grade_y', 'Grade Y'))
             if len(self.session.point_selection) > 1:
                 rows.append(('MERGE', 'Merge selected points', ''))
             if pattern and self.session.path != 'OUTER':
@@ -1244,7 +1258,7 @@ class MinimalCards:
                                   f'Default fabric updated to {cand}.')
                     self._scene.dd_fabric = cand
             return True
-        action = {'dd_point_x': 'POINT_APPLY', 'dd_point_y': 'POINT_APPLY', 'dd_segment_length': 'SET_LENGTH'}.get(key)
+        action = {'dd_point_x': 'POINT_APPLY', 'dd_point_y': 'POINT_APPLY', 'dd_segment_length': 'SET_LENGTH', 'dd_grade_x': 'GRADE_APPLY', 'dd_grade_y': 'GRADE_APPLY'}.get(key)
         if action:
             return self.perform_action(action)
 
@@ -1360,6 +1374,19 @@ class MinimalCards:
             else:
                 distance = float(key.removeprefix('EDGE_ALLOWANCE_').split()[0]) / 100
                 self.run_edit(lambda: self.session.set_edge_allowance(edge, distance), 'Edge allowance set.')
+        elif key.startswith('SET_SIZE_'):
+            name = key.removeprefix('SET_SIZE_')
+            scene.dd_size = '' if name == getattr(self.session.document, 'base_size', '') else name
+        elif key == 'ADD_SIZE':
+            bpy.ops.devil_designer.size_name('INVOKE_DEFAULT')
+        elif key == 'REMOVE_SIZE':
+            size = scene.dd_size
+            self.run_edit(lambda: self.session.remove_size(size), 'Size removed.')
+            scene.dd_size = ''
+        elif key.startswith('GRADE_SCALE_'):
+            size = scene.dd_size
+            factor = 1 + float(key.removeprefix('GRADE_SCALE_').removesuffix('%')) / 100
+            self.run_edit(lambda: self.session.grade_proportional(size, factor, factor), 'Size scaled.')
         elif key in {'SELECT_BOX', 'SELECT_LASSO'}:
             self.choose_tool('SELECT')
             self.armed_selection = key

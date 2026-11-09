@@ -100,6 +100,7 @@ class Vertex:
     incoming: tuple = None
     outgoing: tuple = None
     point_type: str = 'CORNER'
+    grades: dict = None
 
 def compute_auto_handles(nodes,idx,closed):
     v=nodes[idx]
@@ -240,7 +241,7 @@ class Anchor:
 
 
 def vertex_data(v):
-    return dict(x=float(v.x),y=float(v.y),id=v.id,incoming=v.incoming,outgoing=v.outgoing,point_type=getattr(v,'point_type','CORNER'))
+    return dict(x=float(v.x),y=float(v.y),id=v.id,incoming=v.incoming,outgoing=v.outgoing,point_type=getattr(v,'point_type','CORNER'),**({'grades':getattr(v,'grades',None)} if getattr(v,'grades',None) else {}))
 
 
 def read_vertex(v):
@@ -256,7 +257,15 @@ def read_vertex(v):
         ptype='SMOOTH' if (handles[0] is not None or handles[1] is not None) else 'CORNER'
     elif ptype not in ('CORNER','SMOOTH','AUTO'):
         raise ValueError('Unknown point type.')
-    return Vertex(float(v['x']),float(v['y']),v['id'],handles[0],handles[1],point_type=ptype)
+    grades=v.get('grades')
+    if grades is not None:
+        if not isinstance(grades,dict): raise ValueError('Invalid grade rule.')
+        cleaned={}
+        for name,delta in grades.items():
+            if not isinstance(name,str) or len(delta)!=2 or any(not math.isfinite(float(n)) for n in delta): raise ValueError('Invalid grade rule.')
+            cleaned[name]=(float(delta[0]),float(delta[1]))
+        grades=cleaned
+    return Vertex(float(v['x']),float(v['y']),v['id'],handles[0],handles[1],point_type=ptype,grades=grades)
 
 
 ARRANGEMENT_KEYS={'version','volume','point','flat','translation','rotation'}
@@ -297,6 +306,8 @@ class Document:
         self.elastics=[]
         self.joins=[]
         self.steam=[]
+        self.sizes=[]
+        self.base_size=''
 
     def dumps(self):
         return json.dumps(dict(version=4,preset=getattr(self,'preset','COTTON'),patterns=[dict(id=p.id,name=p.name,\
@@ -304,7 +315,7 @@ class Document:
             vertices=[vertex_data(v) for v in q.vertices]) for q in p.paths],preset=p.preset,wrap_radius=p.wrap_radius,\
             features=p.features,mesh_density=p.mesh_density,fabric_override=getattr(p,'fabric_override',False),placement_mode=p.placement_mode,arrangement=p.arrangement,panel_origin=p.panel_origin,**({'allowance':getattr(p,'allowance',0.0)} if getattr(p,'allowance',0.0) else {}),**({'edge_allowances':getattr(p,'edge_allowances',None)} if getattr(p,'edge_allowances',None) else {}),**({'simulation':{key:getattr(p,key) for key in ('frozen','deactivated','strengthened') if getattr(p,key)}} if p.frozen or p.deactivated or p.strengthened else {})) for p in self.patterns],seams=[dict(id=s.id,a=vars(s.a),b=vars(s.b),reverse=s.reverse,\
             chain_a=[vars(e) for e in s.side(0)],chain_b=[vars(e) for e in s.side(1)],**({"shrink":s.shrink} if s.shrink else {}),**({"ease_side":s.ease_side} if s.ease_side else {}),**({"active":False} if not s.active else {})) for s in self.seams],\
-            anchors=[vars(a) for a in self.anchors],uv_layout=self.uv_layout,**({'linked_pairs':self.linked_pairs} if self.linked_pairs else {}),**({'custom_presets':self.custom_presets} if getattr(self,'custom_presets',None) else {}),**({'elastics':self.elastics} if self.elastics else {}),**({'joins':self.joins} if self.joins else {}),**({'steam':self.steam} if self.steam else {})),separators=(',',':'),allow_nan=False)
+            anchors=[vars(a) for a in self.anchors],uv_layout=self.uv_layout,**({'linked_pairs':self.linked_pairs} if self.linked_pairs else {}),**({'custom_presets':self.custom_presets} if getattr(self,'custom_presets',None) else {}),**({'elastics':self.elastics} if self.elastics else {}),**({'joins':self.joins} if self.joins else {}),**({'steam':self.steam} if self.steam else {}),**({'sizes':self.sizes} if getattr(self,'sizes',None) else {}),**({'base_size':self.base_size} if getattr(self,'base_size','') else {})),separators=(',',':'),allow_nan=False)
 
     @classmethod
     def loads(cls,value):
@@ -356,6 +367,8 @@ class Document:
             document.elastics=data.get('elastics',[])
             document.joins=data.get('joins',[])
             document.steam=data.get('steam',[])
+            document.sizes=data.get('sizes',[])
+            document.base_size=data.get('base_size','')
             if data['version']<3 and patterns:
                 points=[point for p in patterns for point in p.points]
                 lo=[min(p[a] for p in points) for a in (0,1)]
@@ -439,6 +452,9 @@ class Document:
             ids.add(value)
         valid_presets={'COTTON','LINEN','SILK','DENIM','KNIT','LEATHER'}|set(getattr(self,'custom_presets',{}) or {})
         if getattr(self,'preset','COTTON') not in valid_presets: raise ValueError('Unknown cloth preset.')
+        sizes=getattr(self,'sizes',[]) or []
+        if not isinstance(sizes,list) or any(not isinstance(name,str) or not name.strip() for name in sizes) or len(set(sizes))!=len(sizes): raise ValueError('Size names must be unique and nonempty.')
+        if getattr(self,'base_size','') and self.base_size not in sizes: raise ValueError('The base size must be one of the sizes.')
         for p in self.patterns:
             identity(p.id)
             if not isinstance(p.name,str) or not p.name.strip(): raise ValueError('Pattern names must contain text.')
@@ -458,6 +474,10 @@ class Document:
             if getattr(p,'edge_allowances',None):
                 outer_ids={v.id for v in p.vertices}
                 p.edge_allowances={key:value for key,value in p.edge_allowances.items() if key in outer_ids}
+            if sizes:
+                for v in p.vertices:
+                    if getattr(v,'grades',None):
+                        v.grades={key:value for key,value in v.grades.items() if key in sizes} or None
             for v in p.vertices: identity(v.id)
             outer=p.outline();validate_polygon(outer)
             holes=[]
@@ -508,6 +528,24 @@ class Document:
             if not math.isfinite(scale) or scale<=0 or len(origin)!=2 or any(not math.isfinite(v) for v in origin):
                 raise ValueError('Invalid UV layout transform.')
 
+    def graded(self,size):
+        result=Document.loads(self.dumps())
+        if not size or size==getattr(self,'base_size','') or size not in (getattr(self,'sizes',[]) or []):
+            return result
+        for p in result.patterns:
+            for _,nodes,_,_ in p.loops():
+                for v in nodes:
+                    dx,dy=(getattr(v,'grades',None) or {}).get(size,(0.0,0.0))
+                    if dx or dy:
+                        v.x+=dx;v.y+=dy
+        result.sizes=[]
+        result.base_size=''
+        for p in result.patterns:
+            for _,nodes,_,_ in p.loops():
+                for v in nodes:
+                    v.grades=None
+        return result
+
     def prune_seams(self):
         valid=[]
         for seam in self.seams:
@@ -540,6 +578,14 @@ class Document:
         else:
             a.outgoing=curves.sub(left[1],left[0]); b.incoming=curves.sub(right[2],right[3])
             v.point_type='SMOOTH'
+        a_grades=getattr(a,'grades',None) or {}
+        b_grades=getattr(b,'grades',None) or {}
+        if a_grades or b_grades:
+            interpolated={}
+            for name in set(a_grades)|set(b_grades):
+                da=a_grades.get(name,(0.0,0.0)); db=b_grades.get(name,(0.0,0.0))
+                interpolated[name]=(da[0]+(db[0]-da[0])*fraction,da[1]+(db[1]-da[1])*fraction)
+            v.grades=interpolated
         nodes.insert(nodes.index(a)+1,v)
         update_auto_handles(nodes,edge.path=='OUTER' or p.path(edge.path).closed)
         def remap(span):
@@ -1973,6 +2019,57 @@ class Session(ConstructionMixin):
             else:
                 overrides[edge.start]=distance
             p.edge_allowances=overrides or None
+        return self.commit(apply)
+
+    def add_size(self,name):
+        if not isinstance(name,str) or not name.strip():raise ValueError('Enter a size name.')
+        if name in self.document.sizes:raise ValueError('That size already exists.')
+        def apply(): self.document.sizes.append(name)
+        return self.commit(apply)
+
+    def remove_size(self,name):
+        if name not in self.document.sizes:raise ValueError('Unknown size.')
+        if name==self.document.base_size:raise ValueError('The base size cannot be removed.')
+        def apply():
+            self.document.sizes.remove(name)
+            for p in self.document.patterns:
+                for _,nodes,_,_ in p.loops():
+                    for v in nodes:
+                        if getattr(v,'grades',None):
+                            v.grades.pop(name,None)
+                            if not v.grades:v.grades=None
+        return self.commit(apply)
+
+    def set_base_size(self,name):
+        if name not in self.document.sizes:raise ValueError('Unknown size.')
+        def apply(): self.document.base_size=name
+        return self.commit(apply)
+
+    def set_grade(self,size,dx,dy):
+        p=self.document.find(self._selected)
+        if p is None or self.corner is None:raise ValueError('Select a point to grade.')
+        if size not in self.document.sizes:raise ValueError('Unknown size.')
+        if not math.isfinite(dx) or not math.isfinite(dy):raise ValueError('Invalid grade rule.')
+        v=p.path(self.path).vertices[self.corner]
+        def apply():
+            grades=dict(getattr(v,'grades',None) or {})
+            grades[size]=(dx,dy)
+            v.grades=grades
+        return self.commit(apply)
+
+    def grade_proportional(self,size,width_factor,height_factor):
+        if size not in self.document.sizes:raise ValueError('Unknown size.')
+        if not math.isfinite(width_factor) or not math.isfinite(height_factor):raise ValueError('Invalid grade scale.')
+        def apply():
+            for p in self.document.patterns:
+                outline=p.outline()
+                xs=[pt[0] for pt in outline];ys=[pt[1] for pt in outline]
+                cx=(min(xs)+max(xs))/2;cy=(min(ys)+max(ys))/2
+                for _,nodes,_,_ in p.loops():
+                    for v in nodes:
+                        grades=dict(getattr(v,'grades',None) or {})
+                        grades[size]=((v.x-cx)*(width_factor-1),(v.y-cy)*(height_factor-1))
+                        v.grades=grades
         return self.commit(apply)
 
     def offset_path(self,distance):

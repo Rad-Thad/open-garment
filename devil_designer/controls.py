@@ -52,6 +52,8 @@ SETTINGS = {
         Setting('dd_point_y', 'Point Y', 100, 'cm', 1, -100, 100),
         Setting('dd_segment_length', 'Segment length', 100, 'cm', .1, .0001, 100),
         Setting('dd_weld_distance', 'Weld distance', 1000, 'mm', .5, .0001, .05),
+        Setting('dd_grade_x', 'Grade X', 100, 'cm', .1, -50, 50),
+        Setting('dd_grade_y', 'Grade Y', 100, 'cm', .1, -50, 50),
     )
 }
 

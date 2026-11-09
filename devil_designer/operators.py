@@ -228,5 +228,19 @@ class DD_OT_seam_length(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DD_OT_size_name(bpy.types.Operator):
+    bl_idname = 'devil_designer.size_name'
+    bl_label = 'Size Name'
+    bl_options = {'INTERNAL'}
+    name: bpy.props.StringProperty(name='Name',default='L')
+    def invoke(self,context,event):
+        return context.window_manager.invoke_props_dialog(self)
+    def execute(self,context):
+        from . import editor
+        active = editor._active
+        active.run_edit(lambda: active.session.add_size(self.name), 'Size added.')
+        return {'FINISHED'}
+
+
 CLASSES = (DD_OT_build_panels,DD_OT_arrange,DD_OT_simulate,DD_OT_stop,DD_OT_reset,
-           DD_OT_keep_drape,DD_OT_seam,DD_OT_demo,DD_OT_exact_shape,DD_OT_seam_length)
+           DD_OT_keep_drape,DD_OT_seam,DD_OT_demo,DD_OT_exact_shape,DD_OT_seam_length,DD_OT_size_name)

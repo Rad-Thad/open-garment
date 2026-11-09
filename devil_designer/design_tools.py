@@ -85,6 +85,8 @@ class DesignTools:
         if p and self.session.corner is not None:
             v=p.path(self.session.path).vertices[self.session.corner]
             self._scene.dd_point_x,self._scene.dd_point_y=v.x,v.y
+            grade=(getattr(v,'grades',None) or {}).get(self._scene.dd_size,(0.0,0.0))
+            self._scene.dd_grade_x,self._scene.dd_grade_y=grade
         if self.session.segment:
             try:self._scene.dd_segment_length=self.session.document.edge_length(self.session.segment)
             except ValueError:self.session.segment=None
@@ -168,6 +170,8 @@ class DesignTools:
                 elif p and self.session.corner is not None:
                     points=p.path(self.session.path).points;points[self.session.corner]=point;self.session.move(points)
                 else:raise ValueError('Select a point or a drawing tool for numeric entry.')
+            elif action=='GRADE_APPLY':
+                self.session.set_grade(scene.dd_size,scene.dd_grade_x,scene.dd_grade_y)
             elif action=='CURVE':
                 new_t=self.session.curve_point()
                 self.message=f"Point type: {new_t.title()}."

@@ -345,6 +345,8 @@ def signature(scene,panels):
         data.append(selection)
     if getattr(scene, 'dd_solver', 'NODES') != 'NODES':
         data.append(scene.dd_solver)
+    if getattr(scene, 'dd_size', ''):
+        data.append(scene.dd_size)
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 
@@ -374,7 +376,7 @@ def build_simulation(context):
     doc = document(scene)
     from . import piece_states
     piece_states.update_display(context,doc)
-    if piece_states.required(doc):
+    if piece_states.required(doc, scene.dd_size):
         return piece_states.compile_run(context,doc)
     require_body(scene)
     panels = generated(scene,'panel')
