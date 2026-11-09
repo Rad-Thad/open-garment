@@ -537,7 +537,7 @@ impl Solver {
 
         let grid = build_grid(&[], &[], params.body_band);
         let (index_data, tris_offset, cell_start_offset, cell_items_offset, collider_tris_offset) =
-            build_index_data(triangles, &grid);
+            build_index_data(triangles, &grid, &[]);
         let n_collider_tris = 0u32;
         let collider_pos_data = vec![0.0f32; 4];
 
@@ -649,7 +649,7 @@ impl Solver {
     pub fn set_collider(&mut self, positions: &[f32], triangles: &[u32]) {
         let grid = build_grid(positions, triangles, self.params.body_band);
         let (index_data, tris_offset, cell_start_offset, cell_items_offset, collider_tris_offset) =
-            build_index_data(&self.cloth_tris_host, &grid);
+            build_index_data(&self.cloth_tris_host, &grid, triangles);
         let collider_pos_data: Vec<[f32; 4]> = positions
             .chunks_exact(3)
             .map(|p| [p[0], p[1], p[2], 0.0])
@@ -874,16 +874,17 @@ fn max_tri_radius(triangles: &[u32], rest_positions: &[f32]) -> f32 {
     r
 }
 
-fn build_index_data(triangles: &[u32], grid: &Grid) -> (Vec<u32>, u32, u32, u32, u32) {
+fn build_index_data(cloth_tris: &[u32], grid: &Grid, collider_tris: &[u32]) -> (Vec<u32>, u32, u32, u32, u32) {
     let tris_offset = 0u32;
-    let cell_start_offset = triangles.len() as u32;
+    let cell_start_offset = cloth_tris.len() as u32;
     let cell_items_offset = cell_start_offset + grid.cell_start.len() as u32;
     let collider_tris_offset = cell_items_offset + grid.cell_items.len() as u32;
     let mut out = Vec::with_capacity(
-        triangles.len() + grid.cell_start.len() + grid.cell_items.len(),
+        cloth_tris.len() + grid.cell_start.len() + grid.cell_items.len() + collider_tris.len(),
     );
-    out.extend_from_slice(triangles);
+    out.extend_from_slice(cloth_tris);
     out.extend_from_slice(&grid.cell_start);
     out.extend_from_slice(&grid.cell_items);
+    out.extend_from_slice(collider_tris);
     (out, tris_offset, cell_start_offset, cell_items_offset, collider_tris_offset)
 }

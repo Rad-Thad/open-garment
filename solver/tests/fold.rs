@@ -45,7 +45,7 @@ fn fold() {
     let pos = solver.positions();
     assert!(pos.iter().all(|v| v.is_finite()), "positions diverged");
     let count = nx * ny;
-    let threshold = 0.5 * params.self_thickness;
+    let threshold = 1e-5;
     for i in 0..count {
         let v = vertex(&pos, i);
         let rv = vertex(&cloth.rest_positions, i);

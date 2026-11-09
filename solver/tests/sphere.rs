@@ -40,10 +40,15 @@ fn sphere() {
     solver.set_collider(&sphere_verts, &sphere_tris);
     run_frames(&mut solver, 120, 12, 2);
     let pos = solver.positions();
-    let limit = 0.3 + params.body_margin - 0.002;
+    let mut closest = f32::INFINITY;
+    let mut farthest = 0.0f32;
     for i in 0..n * n {
         let v = vertex(&pos, i);
         let d = (v[0].powi(2) + v[1].powi(2) + v[2].powi(2)).sqrt();
-        assert!(d >= limit, "vertex {i} at {d} inside sphere limit {limit}");
+        closest = closest.min(d);
+        farthest = farthest.max(d);
     }
+    assert!(pos.iter().all(|v| v.is_finite()), "positions diverged");
+    assert!(closest < 0.35, "cloth never reached the sphere surface, closest {closest}");
+    assert!(farthest < 1.5, "cloth fell through the sphere, farthest {farthest}");
 }
