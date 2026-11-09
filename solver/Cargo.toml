@@ -1,0 +1,24 @@
+[package]
+name = "garment_solver"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Metal-backed GPU XPBD cloth solver for Open Garment"
+
+[lib]
+name = "garment_solver"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wgpu = "30.0.1"
+pollster = "1.0.1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pyo3 = { version = "0.30.1", features = ["abi3-py311"] }
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"

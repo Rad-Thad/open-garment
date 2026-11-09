@@ -19,3 +19,4 @@ Thumbs.db
 .coverage
 htmlcov/
 dist/
+solver/target/
