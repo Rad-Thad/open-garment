@@ -107,6 +107,7 @@ except ValueError as exc:
     raised = 'GPU' in str(exc)
 check(raised, 'measured fabric rejects the NODES solver')
 scene.dd_solver = 'GPU'
+scene.dd_pin_top = True
 
 volumes = {}
 for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
