@@ -12,7 +12,7 @@ DAMPING = 1.0
 ITERATIONS = 2
 LIVE_VERTEX_BUDGET = 600000
 INPUT_PREFIX = 'dd_in:'
-HINGE_SCALE = 3.3
+HINGE_SCALE = 3.0
 
 _sessions = {}
 _last_frames = {}

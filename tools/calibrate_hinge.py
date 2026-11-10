@@ -18,10 +18,10 @@ BEND_CM = (1.5, 2.5, 4.0)
 SPACINGS = (0.005, 0.0025)
 STRIP_WIDTH = 0.025
 PLATFORM = 0.03
-SETTLE_FRAMES = 400
+SETTLE_FRAMES = 150
 SUBSTEPS = 4
 ITERATIONS = 8
-HINGE_SCALE = 3.3
+HINGE_SCALE = 3.0
 
 
 def flexural_rigidity(bend_cm):
@@ -180,19 +180,24 @@ def run_cantilever(spacing, bend_cm, overhang):
     return result, nx, ny
 
 
+def chord_angle(result, nx, ny):
+    tip = result[nx - 1::nx]
+    tip_x = float(tip[:, 0].mean())
+    tip_z = float(tip[:, 2].mean())
+    return math.degrees(math.atan2(-tip_z, tip_x))
+
+
 def main():
     print(f'HINGE_SCALE={HINGE_SCALE} WEIGHT_GSM={WEIGHT_GSM}')
     for spacing in SPACINGS:
         for bend_cm in BEND_CM:
             target = 2.0 * bend_cm / 100.0
             result, nx, ny = run_cantilever(spacing, bend_cm, target)
-            tip_z = float(result[nx - 1::nx, 2].mean())
-            tip_x = float(result[nx - 1::nx, 0].mean())
-            gap = float(tip_z + tip_x * TAN_41_5)
-            ratio = 1.0 + gap / (target * TAN_41_5)
+            angle = chord_angle(result, nx, ny)
+            ratio = 41.5 / angle
             flag = 'OK' if 0.90 <= ratio <= 1.10 else 'ADJUST'
             print(f'spacing={spacing * 1000:.1f}mm bend={bend_cm}cm target={target * 100:.2f}cm '
-                  f'gap={gap * 100:.2f}cm ratio={ratio:.3f} {flag}')
+                  f'chord={angle:.1f}deg ratio={ratio:.3f} {flag}')
 
 
 if __name__ == '__main__':
