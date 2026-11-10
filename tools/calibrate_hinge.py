@@ -189,8 +189,8 @@ def chord_angle(result, nx, ny):
 
 def find_overhang(spacing, bend_cm):
     target = 2.0 * bend_cm / 100.0
-    low = target * 0.8
-    high = target * 1.2
+    low = target * 0.5
+    high = target * 1.5
     for _ in range(14):
         mid = 0.5 * (low + high)
         result, nx, ny = run_cantilever(spacing, bend_cm, mid)
