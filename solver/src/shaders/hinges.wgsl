@@ -81,7 +81,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let n2n = n2 / n2len;
   let s = dot(e, cross(n1n, n2n)) / elen;
   let cos_theta = dot(n1n, n2n);
-  let theta = atan2(s, cos_theta);
+  let theta = atan2(-s, -cos_theta);
   let rest = hinge_rest[j];
   let error = theta - rest;
   let g3 = (elen / (n1len * n1len)) * n1;

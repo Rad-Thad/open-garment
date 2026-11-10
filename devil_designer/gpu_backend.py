@@ -83,7 +83,7 @@ def _hinge_dihedral(a, b, c, d, rest):
     n1n = n1 / np.linalg.norm(n1)
     n2n = n2 / np.linalg.norm(n2)
     s = np.dot(e, np.cross(n1n, n2n)) / elen
-    return float(math.atan2(s, float(np.dot(n1n, n2n))))
+    return float(math.atan2(-s, -float(np.dot(n1n, n2n))))
 
 
 def _hinge_compliance(a, b, c, d, rest_position, flex_warp, flex_weft, flex_bias):
