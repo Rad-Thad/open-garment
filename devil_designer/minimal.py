@@ -29,11 +29,31 @@ def text_unscaled_width(text, size=11):
 
 
 DENSITY = {'Coarse': .04, 'Standard': .02, 'Fine': .01, 'Ultra': .005}
+MEASURED_SETTINGS = {'dd_fabric_weight': 'weight_gsm',
+                     'dd_fabric_stretch_warp': 'stretch_warp',
+                     'dd_fabric_stretch_weft': 'stretch_weft',
+                     'dd_fabric_stretch_bias': 'stretch_bias',
+                     'dd_fabric_bend_warp': 'bend_warp',
+                     'dd_fabric_bend_weft': 'bend_weft',
+                     'dd_fabric_bend_bias': 'bend_bias'}
 def allowance_label(value, labels):
     for label in labels:
         if abs(value - float(label.split()[0]) / 100) < 1e-6:
             return label
     return f'{value * 100:g} cm'
+def _fabric_vals(scene):
+    from .presets import measured_to_preset
+    if scene.dd_fabric_units == 'MEASURED':
+        measured = dict(weight_gsm=scene.dd_fabric_weight,
+                        stretch_warp=scene.dd_fabric_stretch_warp,
+                        stretch_weft=scene.dd_fabric_stretch_weft,
+                        stretch_bias=scene.dd_fabric_stretch_bias,
+                        bend_warp=scene.dd_fabric_bend_warp,
+                        bend_weft=scene.dd_fabric_bend_weft,
+                        bend_bias=scene.dd_fabric_bend_bias)
+        return measured_to_preset(measured)
+    return dict(structural=scene.dd_fabric_structural,
+                bending=scene.dd_fabric_bending, density=scene.dd_fabric_density)
 def heading_to(start, point, rect, margin):
     edge = rect.x if rect.x >= start[0] else rect.x + rect.w
     run, step = edge - start[0], point[0] - start[0]
@@ -504,9 +524,19 @@ class MinimalCards:
             all_presets = list(FABRICS) + customs
             active = pattern.preset if getattr(pattern, 'fabric_override', False) else getattr(doc, 'preset', 'COTTON')
             rows.append(('CHOICES_FABRIC', 'Fabric preset', ('SET_PIECE_FABRIC', all_presets, active)))
-            rows.append(('SLIDER', 'dd_fabric_structural', 'Stretch stiffness'))
-            rows.append(('SLIDER', 'dd_fabric_bending', 'Bending stiffness'))
-            rows.append(('SLIDER', 'dd_fabric_density', 'Mass density'))
+            rows.append(('CHOICES', 'Units', ('FABRIC_UNITS', ('Preset', 'Measured'), 'Measured' if scene.dd_fabric_units == 'MEASURED' else 'Preset')))
+            if scene.dd_fabric_units == 'MEASURED':
+                rows.append(('SLIDER', 'dd_fabric_weight', 'Areal weight (g/m²)'))
+                rows.append(('SLIDER', 'dd_fabric_stretch_warp', 'Stretch warp (N/m)'))
+                rows.append(('SLIDER', 'dd_fabric_stretch_weft', 'Stretch weft (N/m)'))
+                rows.append(('SLIDER', 'dd_fabric_stretch_bias', 'Stretch bias (N/m)'))
+                rows.append(('SLIDER', 'dd_fabric_bend_warp', 'Bend warp (cm)'))
+                rows.append(('SLIDER', 'dd_fabric_bend_weft', 'Bend weft (cm)'))
+                rows.append(('SLIDER', 'dd_fabric_bend_bias', 'Bend bias (cm)'))
+            else:
+                rows.append(('SLIDER', 'dd_fabric_structural', 'Stretch stiffness'))
+                rows.append(('SLIDER', 'dd_fabric_bending', 'Bending stiffness'))
+                rows.append(('SLIDER', 'dd_fabric_density', 'Mass density'))
             rows.append(('SLIDER', 'dd_fabric_weft', 'Weft stretch'))
             rows.append(('SLIDER', 'dd_fabric_bias', 'Bias stiffness'))
             rows.append(('SLIDER', 'dd_fabric_shrink_warp', 'Shrink lengthwise'))
@@ -518,9 +548,19 @@ class MinimalCards:
             title = 'Garment fabric'
             active = getattr(doc, 'preset', 'COTTON')
             rows.append(('INFO', 'Preset', active.title()))
-            rows.append(('SLIDER', 'dd_fabric_structural', 'Stretch stiffness'))
-            rows.append(('SLIDER', 'dd_fabric_bending', 'Bending stiffness'))
-            rows.append(('SLIDER', 'dd_fabric_density', 'Mass density'))
+            rows.append(('CHOICES', 'Units', ('FABRIC_UNITS', ('Preset', 'Measured'), 'Measured' if scene.dd_fabric_units == 'MEASURED' else 'Preset')))
+            if scene.dd_fabric_units == 'MEASURED':
+                rows.append(('SLIDER', 'dd_fabric_weight', 'Areal weight (g/m²)'))
+                rows.append(('SLIDER', 'dd_fabric_stretch_warp', 'Stretch warp (N/m)'))
+                rows.append(('SLIDER', 'dd_fabric_stretch_weft', 'Stretch weft (N/m)'))
+                rows.append(('SLIDER', 'dd_fabric_stretch_bias', 'Stretch bias (N/m)'))
+                rows.append(('SLIDER', 'dd_fabric_bend_warp', 'Bend warp (cm)'))
+                rows.append(('SLIDER', 'dd_fabric_bend_weft', 'Bend weft (cm)'))
+                rows.append(('SLIDER', 'dd_fabric_bend_bias', 'Bend bias (cm)'))
+            else:
+                rows.append(('SLIDER', 'dd_fabric_structural', 'Stretch stiffness'))
+                rows.append(('SLIDER', 'dd_fabric_bending', 'Bending stiffness'))
+                rows.append(('SLIDER', 'dd_fabric_density', 'Mass density'))
             rows.append(('SLIDER', 'dd_fabric_weft', 'Weft stretch'))
             rows.append(('SLIDER', 'dd_fabric_bias', 'Bias stiffness'))
             rows.append(('SLIDER', 'dd_fabric_shrink_warp', 'Shrink lengthwise'))
@@ -1206,12 +1246,59 @@ class MinimalCards:
         self._scene.dd_fabric_structural = vals['structural']
         self._scene.dd_fabric_bending = vals['bending']
         self._scene.dd_fabric_density = vals['density']
+        measured = vals.get('measured')
+        if measured:
+            self._scene.dd_fabric_units = 'MEASURED'
+            for prop, name in MEASURED_SETTINGS.items():
+                setattr(self._scene, prop, measured[name])
+        else:
+            self._scene.dd_fabric_units = 'PRESET'
         for prop, name in GRAIN_SETTINGS.items():
             setattr(self._scene, prop, vals[name])
 
     def apply_local_setting(self, key):
         if key == 'dd_weld_distance':
             self.weld_manual = True
+        if key in MEASURED_SETTINGS:
+            from .presets import measured_to_preset
+            measured = {name: getattr(self._scene, prop) for prop, name in MEASURED_SETTINGS.items()}
+            values = measured_to_preset(measured)
+            doc = self.session.document
+            pattern = self.session.document.find(self.session.selected)
+            if self.card_kind == 'PIECE_FABRIC' and pattern:
+                active = pattern.preset if getattr(pattern, 'fabric_override', False) else getattr(doc, 'preset', 'COTTON')
+                customs = getattr(doc, 'custom_presets', {})
+                if getattr(pattern, 'fabric_override', False) and active in customs:
+                    customs[active].update(values)
+                    self.session.commit(lambda: None)
+                else:
+                    base = f'{pattern.name} Fabric'
+                    cand = base
+                    existing = set(customs.keys()) | set(FABRICS)
+                    idx = 1
+                    while cand in existing:
+                        idx += 1
+                        cand = f'{base} {idx}'
+                    self.run_edit(lambda: (self.session.set_custom_preset(cand, values), self.session.set_fabric_override(cand)),
+                                  f'{pattern.name} fabric override updated.')
+            else:
+                active = getattr(doc, 'preset', 'COTTON')
+                customs = getattr(doc, 'custom_presets', {})
+                if active in customs:
+                    customs[active].update(values)
+                    self.session.commit(lambda: None)
+                else:
+                    base = f'{active.title()} Custom'
+                    cand = base
+                    existing = set(customs.keys()) | set(FABRICS)
+                    idx = 1
+                    while cand in existing:
+                        idx += 1
+                        cand = f'{active.title()} Custom {idx}'
+                    self.run_edit(lambda: (self.session.set_custom_preset(cand, values), self.session.set_document_preset(cand)),
+                                  f'Default fabric updated to {cand}.')
+                    self._scene.dd_fabric = cand
+            return True
         if key in {'dd_fabric_structural', 'dd_fabric_bending', 'dd_fabric_density'} | set(GRAIN_SETTINGS):
             prop_map = {'dd_fabric_structural': 'structural',
                         'dd_fabric_bending': 'bending', 'dd_fabric_density': 'density', **GRAIN_SETTINGS}
@@ -1499,8 +1586,7 @@ class MinimalCards:
             while cand in existing:
                 idx += 1
                 cand = f'{base} {idx}'
-            vals = dict(structural=scene.dd_fabric_structural,
-                        bending=scene.dd_fabric_bending, density=scene.dd_fabric_density)
+            vals = _fabric_vals(scene)
             self.run_edit(lambda: (self.session.set_custom_preset(cand, vals), self.session.set_document_preset(cand)),
                           f'Custom preset "{cand}" saved with garment.')
             scene.dd_fabric = cand
@@ -1515,8 +1601,7 @@ class MinimalCards:
                 while cand in existing:
                     idx += 1
                     cand = f'{base} {idx}'
-                vals = dict(structural=scene.dd_fabric_structural,
-                            bending=scene.dd_fabric_bending, density=scene.dd_fabric_density)
+                vals = _fabric_vals(scene)
                 self.run_edit(lambda: (self.session.set_custom_preset(cand, vals), self.session.set_fabric_override(cand)),
                               f'Custom preset "{cand}" saved for {pattern.name}.')
         elif key == 'DELETE_CUSTOM_PRESET':
@@ -1567,6 +1652,8 @@ class MinimalCards:
         elif key.startswith('THICKNESS_'):
             choice = key.removeprefix('THICKNESS_')
             scene.dd_thickness = THICKNESS[choice]
+        elif key.startswith('FABRIC_UNITS_'):
+            scene.dd_fabric_units = 'MEASURED' if key == 'FABRIC_UNITS_Measured' else 'PRESET'
         elif key == 'WELD_AUTO':
             self.weld_manual = not getattr(self, 'weld_manual', False)
         elif key == 'INSP_FIT':

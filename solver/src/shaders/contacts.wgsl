@@ -31,7 +31,10 @@ struct Params {
   hash_cell_size: f32,
   inv_cell_size: f32,
   inv_hash_cell_size: f32,
-  pad: vec4<f32>,
+  k: u32,
+  pad0: f32,
+  pad1: f32,
+  pad2: f32,
 }
 
 struct VertAttr {

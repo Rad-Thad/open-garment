@@ -38,6 +38,9 @@ fn fold() {
         &cloth.partner,
         &cloth.contact_weight,
         &params,
+            &[],
+            &[],
+            &[],
     )
     .unwrap();
     solver.set_collider(&box_verts, &box_tris);

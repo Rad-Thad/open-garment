@@ -1,5 +1,8 @@
 import math
 
+MASS_SCALE = 1000.0
+STRETCH_COMPLIANCE = 1.0e-8
+
 
 PRESETS = {
     'SILK': dict(structural=12.3, bending=0.55, density=0.07),
@@ -14,17 +17,40 @@ PRESETS = {
 FABRIC_DEFAULTS = dict(weft=1.0, bias=1.0, shrink_warp=0.0, shrink_weft=0.0)
 REQUIRED = {'structural', 'bending', 'density'}
 SHRINK_LIMIT = .3
+MEASURED_KEYS = {'weight_gsm', 'stretch_warp', 'stretch_weft', 'stretch_bias', 'bend_warp', 'bend_weft', 'bend_bias'}
+
+
+def valid_measured(measured):
+    if not isinstance(measured, dict) or set(measured) != MEASURED_KEYS:
+        return False
+    return all(type(value) in (int, float) and math.isfinite(value) and value > 0 for value in measured.values())
 
 
 def valid_fabric(values):
-    if not isinstance(values, dict) or not REQUIRED <= set(values) <= REQUIRED | set(FABRIC_DEFAULTS):
+    if not isinstance(values, dict):
+        return False
+    keys = set(values)
+    if 'measured' in keys:
+        keys.remove('measured')
+        if not valid_measured(values['measured']):
+            return False
+    if not REQUIRED <= keys <= REQUIRED | set(FABRIC_DEFAULTS):
         return False
     for key, value in values.items():
+        if key == 'measured':
+            continue
         if type(value) not in (int, float) or not math.isfinite(value):
             return False
         if key.startswith('shrink_') and abs(value) > SHRINK_LIMIT or not key.startswith('shrink_') and value <= 0:
             return False
     return True
+
+
+def measured_to_preset(measured):
+    density = measured['weight_gsm'] / 1000
+    structural = measured['stretch_warp'] * STRETCH_COMPLIANCE * 32 * MASS_SCALE
+    bending = min(PRESETS.values(), key=lambda preset: abs(preset['density'] - density))['bending']
+    return dict(structural=structural, bending=bending, density=density, measured=measured)
 
 
 def resolve_preset(name, custom_presets=None):

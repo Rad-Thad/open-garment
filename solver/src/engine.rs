@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use pollster::block_on;
 use wgpu::util::DeviceExt;
 
-use crate::coloring;
+use crate::coloring::{self, greedy_hinges};
 use crate::grid::{build as build_grid, Grid};
 
 const WORKGROUP: u32 = 64;
@@ -46,7 +46,8 @@ pub struct Params {
     pub hash_cell_size: f32,
     pub inv_cell_size: f32,
     pub inv_hash_cell_size: f32,
-    pub pad: [f32; 4],
+    pub k: u32,
+    pub pad: [f32; 3],
 }
 
 #[repr(C)]
@@ -106,6 +107,7 @@ struct Pipelines {
     integrate: wgpu::ComputePipeline,
     clear: wgpu::ComputePipeline,
     pairs: wgpu::ComputePipeline,
+    hinges: wgpu::ComputePipeline,
     hash: wgpu::ComputePipeline,
     contacts: wgpu::ComputePipeline,
     apply: wgpu::ComputePipeline,
@@ -116,6 +118,7 @@ struct Layouts {
     integrate: wgpu::BindGroupLayout,
     clear: wgpu::BindGroupLayout,
     pairs: wgpu::BindGroupLayout,
+    hinges: wgpu::BindGroupLayout,
     hash: wgpu::BindGroupLayout,
     contacts: wgpu::BindGroupLayout,
     apply: wgpu::BindGroupLayout,
@@ -126,6 +129,7 @@ struct Bg {
     integrate: wgpu::BindGroup,
     clear: wgpu::BindGroup,
     pairs: wgpu::BindGroup,
+    hinges: wgpu::BindGroup,
     hash: wgpu::BindGroup,
     contacts: wgpu::BindGroup,
     apply: wgpu::BindGroup,
@@ -185,7 +189,7 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
         }),
         clear: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("clear"),
-            entries: &[storage_rw(0), storage_rw(1), storage_rw(2), storage_rw(3), uniform(4, true, params_size)],
+            entries: &[storage_rw(0), storage_rw(1), storage_rw(2), storage_rw(3), storage_rw(4), uniform(5, true, params_size)],
         }),
         pairs: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pairs"),
@@ -196,6 +200,19 @@ fn create_layouts(device: &wgpu::Device) -> Layouts {
                 storage_ro(3),
                 uniform(4, true, params_size),
                 uniform(5, true, color_size),
+            ],
+        }),
+        hinges: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hinges"),
+            entries: &[
+                storage_rw(0),
+                storage_ro(1),
+                storage_ro(2),
+                storage_ro(3),
+                storage_ro(4),
+                storage_rw(5),
+                uniform(6, true, params_size),
+                uniform(7, true, color_size),
             ],
         }),
         hash: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -251,6 +268,7 @@ fn create_pipelines(device: &wgpu::Device, layouts: &Layouts) -> Pipelines {
         integrate: make("integrate", include_str!("shaders/integrate.wgsl"), &layouts.integrate),
         clear: make("clear", include_str!("shaders/clear.wgsl"), &layouts.clear),
         pairs: make("pairs", include_str!("shaders/pairs.wgsl"), &layouts.pairs),
+        hinges: make("hinges", include_str!("shaders/hinges.wgsl"), &layouts.hinges),
         hash: make("hash", include_str!("shaders/hash.wgsl"), &layouts.hash),
         contacts: make("contacts", include_str!("shaders/contacts.wgsl"), &layouts.contacts),
         apply: make("apply", include_str!("shaders/apply.wgsl"), &layouts.apply),
@@ -292,6 +310,11 @@ fn build_bind_groups(
     index_data: &wgpu::Buffer,
     params: &wgpu::Buffer,
     color: &wgpu::Buffer,
+    hinges: &wgpu::Buffer,
+    hinge_rest: &wgpu::Buffer,
+    hinge_compliance: &wgpu::Buffer,
+    hinge_lambda: &wgpu::Buffer,
+    hinge_color: &wgpu::Buffer,
 ) -> Bg {
     let params_size = std::mem::size_of::<Params>() as u64;
     let color_size = 8u64;
@@ -311,7 +334,8 @@ fn build_bind_groups(
                 entry(1, contact_out),
                 entry(2, hash_head),
                 entry(3, hash_next),
-                params_entry(4),
+                entry(4, hinge_lambda),
+                params_entry(5),
             ],
         }),
         pairs: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -324,6 +348,20 @@ fn build_bind_groups(
                 entry(3, vert_attr),
                 params_entry(4),
                 color_entry(5),
+            ],
+        }),
+        hinges: device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hinges"),
+            layout: &layouts.hinges,
+            entries: &[
+                entry(0, state),
+                entry(1, vert_attr),
+                entry(2, hinges),
+                entry(3, hinge_rest),
+                entry(4, hinge_compliance),
+                entry(5, hinge_lambda),
+                params_entry(6),
+                sized_entry(7, hinge_color, 8),
             ],
         }),
         hash: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -404,6 +442,11 @@ pub struct Solver {
     index_data: wgpu::Buffer,
     params_buf: wgpu::Buffer,
     color_buf: wgpu::Buffer,
+    hinges: wgpu::Buffer,
+    hinge_rest: wgpu::Buffer,
+    hinge_compliance: wgpu::Buffer,
+    hinge_lambda: wgpu::Buffer,
+    hinge_color_buf: wgpu::Buffer,
     staging: wgpu::Buffer,
     pipelines: Pipelines,
     layouts: Layouts,
@@ -411,9 +454,12 @@ pub struct Solver {
     n: u32,
     m: u32,
     t: u32,
+    k: u32,
     n_collider_tris: u32,
     n_colors: u32,
     color_counts: Vec<u32>,
+    hinge_n_colors: u32,
+    hinge_color_counts: Vec<u32>,
     hash_s: u32,
     hash_mask: u32,
     hash_min: [f32; 4],
@@ -455,10 +501,14 @@ impl Solver {
         partner: &[i32],
         contact_weight: &[f32],
         params: &SolverParams,
+        hinges: &[u32],
+        hinge_rest: &[f32],
+        hinge_compliance: &[f32],
     ) -> Result<Self, String> {
         let n = positions.len() / 3;
         let m = pairs.len() / 2;
         let t = triangles.len() / 3;
+        let k = hinges.len() / 4;
         if n == 0 {
             return Err("zero vertices".to_string());
         }
@@ -472,6 +522,8 @@ impl Solver {
             || rest_positions.len() != n * 3
             || partner.len() != n
             || contact_weight.len() != n
+            || hinge_rest.len() != k
+            || hinge_compliance.len() != k
         {
             return Err("array length mismatch".to_string());
         }
@@ -493,6 +545,25 @@ impl Solver {
             let base = c * SLOT as usize;
             color_bytes[base..base + 4].copy_from_slice(&coloring.offsets[c].to_le_bytes());
             color_bytes[base + 4..base + 8].copy_from_slice(&coloring.counts[c].to_le_bytes());
+        }
+
+        let hinge_coloring = greedy_hinges(hinges, n)?;
+        let mut reordered_hinges = vec![0u32; 4 * k];
+        let mut reordered_hinge_rest = vec![0.0f32; k];
+        let mut reordered_hinge_compliance = vec![0.0f32; k];
+        for (new_pos, &old) in hinge_coloring.order.iter().enumerate() {
+            let old = old as usize;
+            for j in 0..4 {
+                reordered_hinges[4 * new_pos + j] = hinges[4 * old + j];
+            }
+            reordered_hinge_rest[new_pos] = hinge_rest[old];
+            reordered_hinge_compliance[new_pos] = hinge_compliance[old];
+        }
+        let mut hinge_color_bytes = vec![0u8; (MAX_COLORS * SLOT) as usize];
+        for c in 0..hinge_coloring.n_colors as usize {
+            let base = c * SLOT as usize;
+            hinge_color_bytes[base..base + 4].copy_from_slice(&hinge_coloring.offsets[c].to_le_bytes());
+            hinge_color_bytes[base + 4..base + 8].copy_from_slice(&hinge_coloring.counts[c].to_le_bytes());
         }
 
         let mut state_data = vec![[0.0f32; 4]; 2 * n];
@@ -587,6 +658,20 @@ impl Solver {
             mapped_at_creation: false,
         });
         queue.write_buffer(&color_buf, 0, &color_bytes);
+        let hinge_hinges_data = if k == 0 { vec![0u32; 4] } else { reordered_hinges };
+        let hinge_rest_data = if k == 0 { vec![0.0f32] } else { reordered_hinge_rest };
+        let hinge_compliance_data = if k == 0 { vec![0.0f32] } else { reordered_hinge_compliance };
+        let hinges_buf = storage_buffer(&device, bytemuck::cast_slice(&hinge_hinges_data), "hinges", false);
+        let hinge_rest_buf = storage_buffer(&device, bytemuck::cast_slice(&hinge_rest_data), "hinge_rest", false);
+        let hinge_compliance_buf = storage_buffer(&device, bytemuck::cast_slice(&hinge_compliance_data), "hinge_compliance", false);
+        let hinge_lambda_buf = storage_buffer(&device, &vec![0u8; (k * 4).max(4)], "hinge_lambda", false);
+        let hinge_color_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hinge_color"),
+            size: (MAX_COLORS * SLOT) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&hinge_color_buf, 0, &hinge_color_bytes);
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging"),
             size: (n * 16) as u64,
@@ -599,6 +684,7 @@ impl Solver {
         let bg = build_bind_groups(
             &device, &layouts, &state, &pin, &vert_attr, &constraints, &pairs, &contact_out,
             &hash_head, &hash_next, &rest_pos, &collider_pos, &index_data, &params_buf, &color_buf,
+            &hinges_buf, &hinge_rest_buf, &hinge_compliance_buf, &hinge_lambda_buf, &hinge_color_buf,
         );
 
         let mut solver = Solver {
@@ -617,6 +703,11 @@ impl Solver {
             index_data,
             params_buf,
             color_buf,
+            hinges: hinges_buf,
+            hinge_rest: hinge_rest_buf,
+            hinge_compliance: hinge_compliance_buf,
+            hinge_lambda: hinge_lambda_buf,
+            hinge_color_buf,
             staging,
             pipelines,
             layouts,
@@ -624,9 +715,12 @@ impl Solver {
             n: n as u32,
             m: m as u32,
             t: t as u32,
+            k: k as u32,
             n_collider_tris,
             n_colors: coloring.n_colors,
             color_counts: coloring.counts,
+            hinge_n_colors: hinge_coloring.n_colors,
+            hinge_color_counts: hinge_coloring.counts,
             hash_s: hash_s as u32,
             hash_mask,
             hash_min,
@@ -671,6 +765,7 @@ impl Solver {
             &self.device, &self.layouts, &self.state, &self.pin, &self.vert_attr, &self.constraints,
             &self.pairs, &self.contact_out, &self.hash_head, &self.hash_next, &self.rest_pos,
             &self.collider_pos, &self.index_data, &self.params_buf, &self.color_buf,
+            &self.hinges, &self.hinge_rest, &self.hinge_compliance, &self.hinge_lambda, &self.hinge_color_buf,
         );
         self.upload_all_params();
     }
@@ -745,7 +840,8 @@ impl Solver {
             hash_cell_size: self.hash_cell_size,
             inv_cell_size: 1.0 / self.grid.cell_size,
             inv_hash_cell_size: self.inv_hash_cell_size,
-            pad: [0.0; 4],
+            k: self.k,
+            pad: [0.0; 3],
         }
     }
 
@@ -767,7 +863,7 @@ impl Solver {
         self.queue.write_buffer(&self.params_buf, 0, &bytes);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let clear_n = self.m.max(self.n).max(self.hash_s).max(self.t);
+        let clear_n = self.m.max(self.n).max(self.hash_s).max(self.t).max(self.k);
         for s in 0..substeps {
             let param_off = (s * SLOT) as u32;
             {
@@ -789,6 +885,14 @@ impl Solver {
                     let color_off = (c * SLOT) as u32;
                     pass.set_bind_group(0, &self.bg.pairs, &[param_off, color_off]);
                     let count = self.color_count(c);
+                    pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
+                }
+                for c in 0..self.hinge_n_colors {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                    pass.set_pipeline(&self.pipelines.hinges);
+                    let color_off = (c * SLOT) as u32;
+                    pass.set_bind_group(0, &self.bg.hinges, &[param_off, color_off]);
+                    let count = self.hinge_color_counts[c as usize];
                     pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
                 }
             }

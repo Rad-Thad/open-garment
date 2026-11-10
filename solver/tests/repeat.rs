@@ -17,6 +17,9 @@ fn run(cloth: &Cloth, params: &SolverParams, n: usize) -> Vec<f32> {
         &cloth.partner,
         &cloth.contact_weight,
         params,
+        &[],
+        &[],
+        &[],
     )
     .unwrap();
     let mut mask = vec![0u8; count];

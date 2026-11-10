@@ -31,7 +31,10 @@ struct Params {
   hash_cell_size: f32,
   inv_cell_size: f32,
   inv_hash_cell_size: f32,
-  pad: vec4<f32>,
+  k: u32,
+  pad0: f32,
+  pad1: f32,
+  pad2: f32,
 }
 
 struct ContactOut {
@@ -44,7 +47,8 @@ struct ContactOut {
 @group(0) @binding(1) var<storage, read_write> contact_out: array<ContactOut>;
 @group(0) @binding(2) var<storage, read_write> hash_head: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> hash_next: array<u32>;
-@group(0) @binding(4) var<uniform> params: Params;
+@group(0) @binding(4) var<storage, read_write> hinge_lambda: array<f32>;
+@group(0) @binding(5) var<uniform> params: Params;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -61,5 +65,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   if (i < params.t) {
     hash_next[i] = 0xFFFFFFFFu;
+  }
+  if (i < params.k) {
+    hinge_lambda[i] = 0.0;
   }
 }

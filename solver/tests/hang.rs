@@ -25,6 +25,9 @@ fn hang() {
         &cloth.partner,
         &cloth.contact_weight,
         &params,
+            &[],
+            &[],
+            &[],
     )
     .unwrap();
     let count = n * n;

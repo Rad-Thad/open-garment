@@ -35,6 +35,9 @@ fn sphere() {
         &cloth.partner,
         &cloth.contact_weight,
         &params,
+            &[],
+            &[],
+            &[],
     )
     .unwrap();
     solver.set_collider(&sphere_verts, &sphere_tris);

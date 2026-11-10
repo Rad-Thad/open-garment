@@ -3,11 +3,9 @@ import bpy
 import numpy as np
 
 from . import gpu_backend, seam_shrink, xpbd_nodes
-from .presets import resolve_preset
+from .presets import MASS_SCALE, STRETCH_COMPLIANCE, resolve_preset
 
 MODIFIER = 'DD XPBD'
-MASS_SCALE = 1000.0
-STRETCH_COMPLIANCE = 1.0e-8
 BEND_COMPLIANCE = 5.0e-4
 SEAM_COMPLIANCE = 0.0
 PIN_COMPLIANCE = 0.0
@@ -294,12 +292,31 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     bending = np.empty(count)
     density = np.empty(count)
     grain = np.empty((count, 4))
+    measured = np.zeros(count, dtype=bool)
+    stretch_warp_vertex = np.zeros(count)
+    flex_warp = np.zeros(count)
+    flex_weft = np.zeros(count)
+    flex_bias = np.zeros(count)
     for ids, _, preset in pieces:
         values = resolve_preset(preset, custom)
         structural[ids] = values['structural']
         bending[ids] = values['bending']
         density[ids] = values['density']
         grain[ids] = values['weft'], values['bias'], values['shrink_weft'], values['shrink_warp']
+        data = values.get('measured')
+        if data is not None:
+            measured[ids] = True
+            stretch_warp_vertex[ids] = data['stretch_warp']
+            weft_ratio = data['stretch_weft'] / data['stretch_warp']
+            grain[ids, 0] = weft_ratio
+            grain[ids, 1] = 4 * (data['stretch_bias'] / data['stretch_warp']) / (1 + weft_ratio) - 1
+            grain[ids, 2] = 0.0
+            grain[ids, 3] = 0.0
+            flex_warp[ids] = data['weight_gsm'] / 1000 * 9.81 * (data['bend_warp'] / 100) ** 3
+            flex_weft[ids] = data['weight_gsm'] / 1000 * 9.81 * (data['bend_weft'] / 100) ** 3
+            flex_bias[ids] = data['weight_gsm'] / 1000 * 9.81 * (data['bend_bias'] / 100) ** 3
+    if scene.dd_solver == 'NODES' and measured.any():
+        raise ValueError('Measured fabrics need the GPU solver. Choose Solver: GPU in Garment & View.')
     edges = np.empty(len(mesh.edges) * 2, dtype=np.int32)
     mesh.edges.foreach_get('vertices', edges)
     edges = edges.reshape(-1, 2)
@@ -341,6 +358,28 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     compliance = STRETCH_COMPLIANCE * 32.0 / (pair_stiffness * np.maximum(grain_stiffness, 1e-3))
     compliance[loose] = SEAM_COMPLIANCE
     compliance[linked] = LINK_COMPLIANCE * (LINK_MIN_BENDING / np.minimum(bending[edges[linked, 0]], bending[edges[linked, 1]])) ** 2
+    if measured.any():
+        mesh.calc_loop_triangles()
+        triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+        mesh.loop_triangles.foreach_get('vertices', triangles)
+        triangles = triangles.reshape(-1, 3)
+        edge_index = {}
+        for index, (a, b) in enumerate(edges.tolist()):
+            edge_index[(min(a, b), max(a, b))] = index
+        edge_area = np.zeros(len(edges))
+        for tri in triangles:
+            ax, ay = rest[tri[0], 0], rest[tri[0], 1]
+            bx, by = rest[tri[1], 0], rest[tri[1], 1]
+            cx, cy = rest[tri[2], 0], rest[tri[2], 1]
+            area = abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5
+            for k in range(3):
+                key = (min(tri[k], tri[(k + 1) % 3]), max(tri[k], tri[(k + 1) % 3]))
+                if key in edge_index:
+                    edge_area[edge_index[key]] += area
+        measured_edges = measured[edges[:, 0]] & measured[edges[:, 1]] & ~loose & ~linked
+        pair_stretch = (stretch_warp_vertex[edges[:, 0]] + stretch_warp_vertex[edges[:, 1]]) * 0.5
+        k_dir = pair_stretch * np.maximum(grain_stiffness, 1e-3)
+        compliance[measured_edges] = length[measured_edges] ** 2 / (k_dir[measured_edges] * np.maximum(edge_area[measured_edges], 1e-12) * MASS_SCALE)
     write(mesh, 'rest_length', 'FLOAT', 'EDGE', length)
     write(mesh, 'dd_seam_start', 'FLOAT', 'EDGE', seam_start)
     write(mesh, 'dd_seam', 'BOOLEAN', 'EDGE', loose)
@@ -349,6 +388,9 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     write(mesh, 'dd_rest_position', 'FLOAT_VECTOR', 'POINT', rest)
     write(mesh, 'dd_bend_rest', 'FLOAT_VECTOR', 'POINT', bend_rest_positions(panels, doc, rest, unit))
     write(mesh, 'dd_bend_compliance', 'FLOAT', 'POINT', BEND_COMPLIANCE * (2.2 / bending) ** 2)
+    write(mesh, 'dd_flex_warp', 'FLOAT', 'POINT', flex_warp)
+    write(mesh, 'dd_flex_weft', 'FLOAT', 'POINT', flex_weft)
+    write(mesh, 'dd_flex_bias', 'FLOAT', 'POINT', flex_bias)
     write(mesh, 'mass', 'FLOAT', 'POINT', np.maximum(face_masses(mesh, rest, density) * MASS_SCALE, 1e-5))
     write(mesh, 'radius', 'FLOAT', 'POINT', np.full(count, CONTACT_RADIUS / unit))
     write(mesh, 'dd_contact_weight', 'FLOAT', 'POINT', np.where(near_seam, 0.0, 1.0))

@@ -83,6 +83,9 @@ fn seam() {
         &vec![-1; count],
         &vec![1.0; count],
         &params,
+            &[],
+            &[],
+            &[],
     )
     .unwrap();
     run_frames(&mut solver, 60, 12, 2);

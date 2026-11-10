@@ -79,6 +79,34 @@ class GradingTests(unittest.TestCase):
         self.session.document.graded('L').validate_seams()
 
 
+class MeasuredFabricTests(unittest.TestCase):
+    def setUp(self):
+        self.session = Session()
+        self.session.add([(0, 0), (.1, 0), (.1, .1), (0, .1)])
+
+    def test_valid_fabric_measured(self):
+        from devil_designer.presets import valid_fabric, valid_measured, measured_to_preset
+        measured = dict(weight_gsm=150, stretch_warp=100, stretch_weft=90, stretch_bias=80,
+                        bend_warp=2.0, bend_weft=2.5, bend_bias=3.0)
+        self.assertTrue(valid_measured(measured))
+        self.assertTrue(valid_fabric(measured_to_preset(measured)))
+        invalid = dict(measured)
+        invalid['weight_gsm'] = 0
+        self.assertFalse(valid_measured(invalid))
+        self.assertFalse(valid_fabric(dict(structural=1, bending=1, density=1, measured=invalid)))
+        self.assertFalse(valid_fabric(dict(structural=1, bending=1, density=1, measured='x')))
+
+    def test_measured_round_trip(self):
+        from devil_designer.presets import measured_to_preset
+        measured = dict(weight_gsm=150, stretch_warp=100, stretch_weft=90, stretch_bias=80,
+                        bend_warp=2.0, bend_weft=2.5, bend_bias=3.0)
+        self.session.set_custom_preset('MeasuredCloth', measured_to_preset(measured))
+        self.session.set_document_preset('MeasuredCloth')
+        restored = Document.loads(self.session.document.dumps())
+        self.assertEqual(restored.custom_presets['MeasuredCloth']['measured'], measured)
+        self.assertEqual(restored.dumps(), self.session.document.dumps())
+
+
 class ExportTests(unittest.TestCase):
     def setUp(self):
         self.session = Session()

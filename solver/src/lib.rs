@@ -126,7 +126,7 @@ struct Solver {
 #[pymethods]
 impl Solver {
     #[new]
-    #[pyo3(signature = (positions, inverse_mass, pairs, rest, rest_start, compliance, triangles, rest_positions, partner, contact_weight, params))]
+    #[pyo3(signature = (positions, inverse_mass, pairs, rest, rest_start, compliance, triangles, rest_positions, partner, contact_weight, params, hinges=None, hinge_rest=None, hinge_compliance=None))]
     fn new(
         positions: &Bound<'_, PyAny>,
         inverse_mass: &Bound<'_, PyAny>,
@@ -139,6 +139,9 @@ impl Solver {
         partner: &Bound<'_, PyAny>,
         contact_weight: &Bound<'_, PyAny>,
         params: &Bound<'_, PyAny>,
+        hinges: Option<&Bound<'_, PyAny>>,
+        hinge_rest: Option<&Bound<'_, PyAny>>,
+        hinge_compliance: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let positions = f32_array(positions, "positions")?;
         let n = positions.len() / 3;
@@ -174,6 +177,23 @@ impl Solver {
         let params_dict = params.cast::<PyDict>()?;
         let mut p = SolverParams::default();
         apply_params(&mut p, params_dict, true)?;
+        let hinges = match hinges {
+            Some(obj) => u32_array(obj, "hinges")?,
+            None => Vec::new(),
+        };
+        if hinges.len() % 4 != 0 {
+            return Err(PyValueError::new_err("hinges length must be a multiple of 4"));
+        }
+        let hinge_rest = match hinge_rest {
+            Some(obj) => f32_array(obj, "hinge_rest")?,
+            None => Vec::new(),
+        };
+        let hinge_compliance = match hinge_compliance {
+            Some(obj) => f32_array(obj, "hinge_compliance")?,
+            None => Vec::new(),
+        };
+        check_len(hinge_rest.len(), hinges.len() / 4, "hinge_rest")?;
+        check_len(hinge_compliance.len(), hinges.len() / 4, "hinge_compliance")?;
         let inner = InnerSolver::new(
             &positions,
             &inverse_mass,
@@ -186,6 +206,9 @@ impl Solver {
             &partner,
             &contact_weight,
             &p,
+            &hinges,
+            &hinge_rest,
+            &hinge_compliance,
         )
         .map_err(|e| {
             if e.starts_with("No GPU adapter") {

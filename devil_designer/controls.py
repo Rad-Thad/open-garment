@@ -54,6 +54,13 @@ SETTINGS = {
         Setting('dd_weld_distance', 'Weld distance', 1000, 'mm', .5, .0001, .05),
         Setting('dd_grade_x', 'Grade X', 100, 'cm', .1, -50, 50),
         Setting('dd_grade_y', 'Grade Y', 100, 'cm', .1, -50, 50),
+        Setting('dd_fabric_weight', 'Areal weight', 1, 'g/m²', 1, 1, 1000),
+        Setting('dd_fabric_stretch_warp', 'Stretch warp', 1, 'N/m', 1, 1, 10000),
+        Setting('dd_fabric_stretch_weft', 'Stretch weft', 1, 'N/m', 1, 1, 10000),
+        Setting('dd_fabric_stretch_bias', 'Stretch bias', 1, 'N/m', 1, 1, 10000),
+        Setting('dd_fabric_bend_warp', 'Bend warp', 1, 'cm', .1, .1, 20),
+        Setting('dd_fabric_bend_weft', 'Bend weft', 1, 'cm', .1, .1, 20),
+        Setting('dd_fabric_bend_bias', 'Bend bias', 1, 'cm', .1, .1, 20),
     )
 }
 

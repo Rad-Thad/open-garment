@@ -14,6 +14,8 @@ from mathutils import Vector
 
 import devil_designer
 from devil_designer import garment, xpbd, xpbd_live
+from devil_designer.core import Document
+from devil_designer.presets import measured_to_preset
 
 
 def check(condition, message):
@@ -87,5 +89,39 @@ check(result is not None and result[1] <= 5, 'Keep welds the GPU drape')
 end = scene.frame_end
 garment.reset(bpy.context)
 check(scene.frame_end == end and scene.render.fps == 30, 'Reset restores the timeline')
+
+soft = dict(weight_gsm=150, stretch_warp=100, stretch_weft=90, stretch_bias=80, bend_warp=1.5, bend_weft=1.5, bend_bias=1.5)
+stiff = dict(weight_gsm=150, stretch_warp=100, stretch_weft=90, stretch_bias=80, bend_warp=4.0, bend_weft=4.0, bend_bias=4.0)
+doc = Document.loads(scene.dd_document)
+doc.custom_presets['MeasuredSoft'] = measured_to_preset(soft)
+doc.custom_presets['MeasuredStiff'] = measured_to_preset(stiff)
+for pattern in doc.patterns:
+    pattern.preset = 'MeasuredSoft'
+scene.dd_document = doc.dumps()
+
+scene.dd_solver = 'NODES'
+raised = False
+try:
+    garment.compile_garment(bpy.context)
+except ValueError as exc:
+    raised = 'GPU' in str(exc)
+check(raised, 'measured fabric rejects the NODES solver')
+scene.dd_solver = 'GPU'
+
+volumes = {}
+for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
+    doc = Document.loads(scene.dd_document)
+    for pattern in doc.patterns:
+        pattern.preset = name
+    scene.dd_document = doc.dumps()
+    garment.reset(bpy.context)
+    simulation = garment.compile_garment(bpy.context)
+    check(simulation.get('dd_solver') == 'GPU', f'{name} compiles on the GPU backend')
+    run_frames(scene, 90)
+    coordinates = points(simulation)
+    volumes[name] = float((coordinates.max(axis=0) - coordinates.min(axis=0)).prod())
+check(volumes['MeasuredStiff'] != volumes['MeasuredSoft'],
+      f'measured bend stiffness changes the drape (stiff {volumes["MeasuredStiff"]:.5f} vs soft {volumes["MeasuredSoft"]:.5f})')
+garment.reset(bpy.context)
 devil_designer.unregister()
 print('ALL GPU CHECKS PASSED', flush=True)
