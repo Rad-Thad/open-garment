@@ -187,31 +187,17 @@ def chord_angle(result, nx, ny):
     return math.degrees(math.atan2(-tip_z, tip_x))
 
 
-def find_overhang(spacing, bend_cm):
-    target = 2.0 * bend_cm / 100.0
-    low = target * 0.5
-    high = target * 1.0
-    for _ in range(14):
-        mid = 0.5 * (low + high)
-        result, nx, ny = run_cantilever(spacing, bend_cm, mid)
-        angle = chord_angle(result, nx, ny)
-        if angle < 41.5:
-            low = mid
-        else:
-            high = mid
-    return 0.5 * (low + high)
-
-
 def main():
     print(f'HINGE_SCALE={HINGE_SCALE} WEIGHT_GSM={WEIGHT_GSM}')
     for spacing in SPACINGS:
         for bend_cm in BEND_CM:
             target = 2.0 * bend_cm / 100.0
-            actual = find_overhang(spacing, bend_cm)
-            ratio = actual / target
+            result, nx, ny = run_cantilever(spacing, bend_cm, target)
+            angle = chord_angle(result, nx, ny)
+            ratio = 41.5 / angle
             flag = 'OK' if 0.90 <= ratio <= 1.10 else 'ADJUST'
             print(f'spacing={spacing * 1000:.1f}mm bend={bend_cm}cm target={target * 100:.2f}cm '
-                  f'overhang={actual * 100:.2f}cm ratio={ratio:.3f} {flag}')
+                  f'chord={angle:.1f}deg ratio={ratio:.3f} {flag}')
 
 
 if __name__ == '__main__':
