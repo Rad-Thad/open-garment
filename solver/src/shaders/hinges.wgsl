@@ -96,8 +96,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let alpha = hinge_compliance[j] * params.h2_inv;
   let dl = -(error + alpha * hinge_lambda[j]) / (wsum + alpha);
   hinge_lambda[j] = hinge_lambda[j] + dl;
-  state[a] = vec4<f32>(x1 - wa * dl * g1, state[a].w);
-  state[b] = vec4<f32>(x2 - wb * dl * g2, state[b].w);
-  state[c] = vec4<f32>(x3 - wc * dl * g3, state[c].w);
-  state[d] = vec4<f32>(x4 - wd * dl * g4, state[d].w);
+  state[a] = vec4<f32>(x1 + wa * dl * g1, state[a].w);
+  state[b] = vec4<f32>(x2 + wb * dl * g2, state[b].w);
+  state[c] = vec4<f32>(x3 + wc * dl * g3, state[c].w);
+  state[d] = vec4<f32>(x4 + wd * dl * g4, state[d].w);
 }

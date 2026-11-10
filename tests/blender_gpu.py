@@ -120,8 +120,8 @@ for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
     run_frames(scene, 90)
     coordinates = points(simulation)
     volumes[name] = float((coordinates.max(axis=0) - coordinates.min(axis=0)).prod())
-check(volumes['MeasuredStiff'] != volumes['MeasuredSoft'],
-      f'measured bend stiffness changes the drape (stiff {volumes["MeasuredStiff"]:.5f} vs soft {volumes["MeasuredSoft"]:.5f})')
+check(volumes['MeasuredStiff'] > volumes['MeasuredSoft'],
+      f'stiffer measured fabric drapes larger ({volumes["MeasuredStiff"]:.5f} > {volumes["MeasuredSoft"]:.5f})')
 garment.reset(bpy.context)
 devil_designer.unregister()
 print('ALL GPU CHECKS PASSED', flush=True)

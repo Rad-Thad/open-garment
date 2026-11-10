@@ -16,9 +16,9 @@ TAN_41_5 = math.tan(math.radians(41.5))
 WEIGHT_GSM = 150.0
 BEND_CM = (1.5, 2.5, 4.0)
 SPACINGS = (0.005, 0.0025)
-STRIP_LENGTH = 0.20
 STRIP_WIDTH = 0.025
-SETTLE_FRAMES = 240
+PLATFORM = 0.03
+SETTLE_FRAMES = 400
 SUBSTEPS = 4
 ITERATIONS = 2
 HINGE_SCALE = 3.0
@@ -28,10 +28,11 @@ def flexural_rigidity(bend_cm):
     return WEIGHT_GSM / 1000.0 * GRAVITY * (bend_cm / 100.0) ** 3
 
 
-def build_strip(spacing):
-    nx = int(round(STRIP_LENGTH / spacing)) + 1
+def build_strip(spacing, overhang):
+    length = PLATFORM + overhang
+    nx = int(round(length / spacing)) + 1
     ny = int(round(STRIP_WIDTH / spacing)) + 1
-    xs = np.linspace(0.0, STRIP_LENGTH, nx)
+    xs = np.linspace(-PLATFORM, overhang, nx)
     ys = np.linspace(0.0, STRIP_WIDTH, ny)
     positions = np.zeros((nx * ny, 3), dtype=np.float32)
     for j, y in enumerate(ys):
@@ -62,28 +63,6 @@ def build_constraints(positions, triangles):
     return edge_pairs, rest_length.astype(np.float32)
 
 
-def build_hinges(positions, triangles):
-    tri = triangles.reshape(-1, 3)
-    edge_tris = {}
-    for index, (a, b, c) in enumerate(tri):
-        for u, v in ((a, b), (b, c), (c, a)):
-            key = (min(u, v), max(u, v))
-            edge_tris.setdefault(key, []).append(index)
-    hinges = []
-    rest = []
-    for (a, b), tris in edge_tris.items():
-        if len(tris) != 2:
-            continue
-        first = tri[tris[0]]
-        second = tri[tris[1]]
-        c = next(int(v) for v in first if v != a and v != b)
-        d = next(int(v) for v in second if v != a and v != b)
-        hinges.append((a, b, c, d))
-        rest.append(dihedral(positions, a, b, c, d))
-    hinges = np.array(hinges, dtype=np.uint32).ravel()
-    return hinges, np.array(rest, dtype=np.float32)
-
-
 def dihedral(positions, a, b, c, d):
     e = positions[b] - positions[a]
     elen = np.linalg.norm(e)
@@ -103,8 +82,32 @@ def hinge_compliance(positions, a, b, c, d, rigidity):
     return 1.0 / (HINGE_SCALE * rigidity * elen / (h1 + h2) * MASS_SCALE)
 
 
-def clamp_plane_collider():
-    reach = STRIP_LENGTH * 2.0
+def build_hinges(positions, triangles, rigidity):
+    tri = triangles.reshape(-1, 3)
+    edge_tris = {}
+    for index, (a, b, c) in enumerate(tri):
+        for u, v in ((a, b), (b, c), (c, a)):
+            key = (min(u, v), max(u, v))
+            edge_tris.setdefault(key, []).append(index)
+    hinges = []
+    rest = []
+    for (a, b), tris in edge_tris.items():
+        if len(tris) != 2:
+            continue
+        first = tri[tris[0]]
+        second = tri[tris[1]]
+        c = next(int(v) for v in first if v != a and v != b)
+        d = next(int(v) for v in second if v != a and v != b)
+        hinges.append((a, b, c, d))
+        rest.append(dihedral(positions, a, b, c, d))
+    hinges = np.array(hinges, dtype=np.uint32).ravel()
+    compliance = np.array([hinge_compliance(positions, a, b, c, d, rigidity) for a, b, c, d in hinges.reshape(-1, 4)],
+                          dtype=np.float32)
+    return hinges, np.array(rest, dtype=np.float32), compliance
+
+
+def clamp_plane_collider(overhang):
+    reach = overhang * 2.0
     width = STRIP_WIDTH * 3.0
     drop = reach * TAN_41_5
     positions = np.array([
@@ -117,22 +120,19 @@ def clamp_plane_collider():
     return positions, triangles
 
 
-def run_cantilever(spacing, bend_cm):
-    positions, triangles, nx, ny = build_strip(spacing)
-    edges, rest_length = build_constraints(positions, triangles)
-    hinges, hinge_rest = build_hinges(positions, triangles)
+def run_cantilever(spacing, bend_cm, overhang):
     rigidity = flexural_rigidity(bend_cm)
-    hinge_compliance = hinge_compliance_for(hinges, positions, rigidity)
+    positions, triangles, nx, ny = build_strip(spacing, overhang)
+    edges, rest_length = build_constraints(positions, triangles)
+    hinges, hinge_rest, hinge_compliance = build_hinges(positions, triangles, rigidity)
 
     n = len(positions)
-    count = n
     density = WEIGHT_GSM / 1000.0
     mass = density * spacing * spacing * MASS_SCALE
-    inverse_mass = np.full(count, 1.0 / mass, dtype=np.float32)
-    rest_start = rest_length.copy()
+    inverse_mass = np.full(n, 1.0 / mass, dtype=np.float32)
     compliance = np.full(len(edges), 1e-6, dtype=np.float32)
-    partner = np.full(count, -1, dtype=np.int32)
-    contact_weight = np.full(count, 1.0, dtype=np.float32)
+    partner = np.full(n, -1, dtype=np.int32)
+    contact_weight = np.full(n, 1.0, dtype=np.float32)
 
     params = {
         'frame_time': 1.0 / 30.0,
@@ -156,7 +156,7 @@ def run_cantilever(spacing, bend_cm):
         inverse_mass,
         edges.ravel(),
         rest_length,
-        rest_start,
+        rest_length.copy(),
         compliance,
         triangles,
         positions.ravel(),
@@ -167,40 +167,35 @@ def run_cantilever(spacing, bend_cm):
         hinge_rest,
         hinge_compliance,
     )
-    plane_pos, plane_tri = clamp_plane_collider()
+    plane_pos, plane_tri = clamp_plane_collider(overhang)
     solver.set_collider(plane_pos, plane_tri)
-
-    mask = np.zeros(count, dtype=np.uint8)
-    mask[::nx] = 1
-    targets = positions.copy()
-    solver.set_pins(mask, targets.ravel())
+    mask = np.zeros(n, dtype=np.uint8)
+    mask[np.where(positions[:, 0] <= 0.0)[0]] = 1
+    solver.set_pins(mask, positions.ravel())
 
     for frame in range(SETTLE_FRAMES):
         solver.set_params({'elapsed': frame / 30.0})
         solver.step(SUBSTEPS, ITERATIONS)
     result = np.frombuffer(solver.positions(), dtype=np.float32).reshape(-1, 3)
-    tip = result[nx - 1::nx]
-    return float(tip[:, 0].max()), float(tip[:, 2].min())
-
-
-def hinge_compliance_for(hinges, positions, rigidity):
-    out = []
-    for a, b, c, d in hinges.reshape(-1, 4):
-        out.append(hinge_compliance(positions, int(a), int(b), int(c), int(d), rigidity))
-    return np.array(out, dtype=np.float32)
+    return result, nx, ny
 
 
 def main():
-    print(f'HINGE_SCALE={HINGE_SCALE} WEIGHT_GSM={WEIGHT_GSM} strip={STRIP_LENGTH:.2f}m x {STRIP_WIDTH:.3f}m')
-    print(f'{BEND_CM} cm bend targets -> overhang {[2 * c for c in BEND_CM]} cm')
+    print(f'HINGE_SCALE={HINGE_SCALE} WEIGHT_GSM={WEIGHT_GSM}')
     for spacing in SPACINGS:
         for bend_cm in BEND_CM:
-            overhang_x, tip_z = run_cantilever(spacing, bend_cm)
-            target = 2 * bend_cm / 100.0
-            ratio = overhang_x / target
-            flag = 'OK' if 0.90 <= ratio <= 1.10 else 'ADJUST'
-            print(f'spacing={spacing * 1000:.1f}mm bend={bend_cm}cm overhang={overhang_x * 100:.2f}cm '
-                  f'target={target * 100:.2f}cm ratio={ratio:.3f} {flag} tip_z={tip_z * 100:.2f}cm')
+            target = 2.0 * bend_cm / 100.0
+            result, nx, ny = run_cantilever(spacing, bend_cm, target)
+            mid = ny // 2
+            tip = result[(mid + 1) * nx - 1]
+            prev = result[(mid + 1) * nx - 2]
+            dx = float(tip[0] - prev[0])
+            dz = float(tip[2] - prev[2])
+            angle = math.degrees(math.atan2(-dz, dx)) if dx > 1e-9 else 90.0
+            tip_z = float(result[nx - 1::nx, 2].mean())
+            gap = float(tip_z + result[nx - 1::nx, 0].mean() * TAN_41_5)
+            print(f'spacing={spacing * 1000:.1f}mm bend={bend_cm}cm target={target * 100:.2f}cm '
+                  f'tip_angle={angle:.1f}deg gap={gap * 100:.2f}cm')
 
 
 if __name__ == '__main__':
