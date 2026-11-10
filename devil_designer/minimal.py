@@ -82,7 +82,8 @@ PLACEMENT_DISTANCE = {'Body': None, '1 cm': .01, '2 cm': .02, '5 cm': .05}
 PLACEMENT_OVERLAP = {'Off': (False, 1), 'Right on top': (True, 1), 'Left on top': (True, -1)}
 IMAGE_OPACITY = {'Light': .2, 'Medium': .35, 'Strong': .6}
 SUBMENUS = {'TRANSFORM_MENU': 'TRANSFORM_MENU', 'PIECE_PLACEMENT_MENU': 'PIECE_PLACEMENT',
-            'PIECE_CLONE_MENU': 'PIECE_CLONE', 'STARTERS_MENU': 'STARTERS', 'SIZES_MENU': 'SIZES'}
+            'PIECE_CLONE_MENU': 'PIECE_CLONE', 'STARTERS_MENU': 'STARTERS', 'SIZES_MENU': 'SIZES',
+            'PRODUCTION_MENU': 'PRODUCTION'}
 
 
 def minimal_layout(layout, pending=False, confirmation=False, playing=False, kept=False, stale=False):
@@ -641,13 +642,17 @@ class MinimalCards:
             rows.append(('MENU', 'MENU_GARMENT', 'Garment settings', getattr(doc, 'preset', 'COTTON').title()))
             rows.append(('CHOICES', 'Mesh density', ('INSP_GARMENT_DENSITY', DENSITY, self.named_choice(scene.dd_spacing, DENSITY))))
             rows.append(('CHOICES', 'Quality', ('INSP_QUALITY', QUALITY, self.named_choice(scene.dd_quality, QUALITY))))
+            rows.append(('MENU', 'PRODUCTION_MENU', 'Production', ''))
+            rows.append(('CHOICES', 'Skin offset', ('INSP_SKIN', SKIN_OFFSET, self.named_choice(scene.dd_skin_offset, SKIN_OFFSET))))
+            rows.append(('CHOICES', 'Friction', ('INSP_FRICTION', FRICTION, self.named_choice(scene.dd_friction, FRICTION))))
+            rows.append(('INSP_FIT', 'Fit design', 'Home'))
+        elif kind == 'PRODUCTION':
+            title = 'Production'
+            rows = []
             rows.append(('CHOICES', 'Seam allowance (all)', ('INSP_ALLOWANCE', ('0 cm', '0.5 cm', '1 cm', '1.5 cm', '2 cm'), '')))
             rows.append(('CHOICES', 'Solver', ('INSP_SOLVER', ('GPU', 'Nodes'), 'GPU' if scene.dd_solver == 'GPU' else 'Nodes')))
             rows.append(('MENU', 'SIZES_MENU', 'Sizes', scene.dd_size or 'Base'))
             rows.append(('EXPORT_PATTERNS', 'Export patterns', 'DXF / PDF'))
-            rows.append(('CHOICES', 'Skin offset', ('INSP_SKIN', SKIN_OFFSET, self.named_choice(scene.dd_skin_offset, SKIN_OFFSET))))
-            rows.append(('CHOICES', 'Friction', ('INSP_FRICTION', FRICTION, self.named_choice(scene.dd_friction, FRICTION))))
-            rows.append(('INSP_FIT', 'Fit design', 'Home'))
         elif kind == 'STARTERS':
             title = 'Starters'
             rows = [('PAIR_ACTIONS', 'STARTER_TEE', 'STARTER_TANK', 'Tee', 'Tank'),
@@ -972,8 +977,8 @@ class MinimalCards:
                 controls.append((Rect(round(card_x + 10 * scale), top_other, inner_w, round((row_pitch - 4) * scale)), r))
             return rect, title, controls
         if is_menu:
-            menu_heights = [48 if row[0] == 'CHOICES' else 34 if row[0] == 'SLIDER' else 22 for row in rows]
-            gap = 2
+            menu_heights = [48 if row[0] == 'CHOICES' else 34 if row[0] == 'SLIDER' else 18 for row in rows]
+            gap = 1
             inner_pad = round(4 * scale)
             item_w = round(width - 2 * inner_pad)
             title_h = round(32 * scale)
