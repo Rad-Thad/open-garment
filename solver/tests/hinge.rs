@@ -92,7 +92,7 @@ fn hinge_relaxes_toward_flat() {
     for _ in 0..60 {
         solver.step(4, 2);
         let current = dihedral(&solver.positions());
-        assert!(current.abs() < initial + 0.1, "dihedral diverged");
+        assert!(current.abs() <= initial, "dihedral exceeded initial ({} > {})", current.abs(), initial);
         previous = current;
     }
     assert!(previous.abs() < 0.02, "hinge did not relax, dihedral {previous}");
