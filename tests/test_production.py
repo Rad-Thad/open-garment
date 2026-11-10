@@ -1,7 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from devil_designer.core import Document, Session, area
-from devil_designer import production
+from devil_designer import production, pattern_export
 
 
 class SeamAllowanceTests(unittest.TestCase):
@@ -75,6 +77,76 @@ class GradingTests(unittest.TestCase):
         self.session.corner = 0
         self.session.set_grade('L', .01, 0.0)
         self.session.document.graded('L').validate_seams()
+
+
+class ExportTests(unittest.TestCase):
+    def setUp(self):
+        self.session = Session()
+        self.session.add([(0, 0), (.1, 0), (.1, .1), (0, .1)])
+        self.pattern = self.session.document.patterns[0]
+
+    def test_export_dxf(self):
+        self.session.set_allowance(.01)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pattern.dxf'
+            pattern_export.write_dxf(path, self.session.document, 'Style', '')
+            text = path.read_text(encoding='ascii')
+        self.assertEqual(text.count('\nBLOCK\n'), 1)
+        perimeters = _dxf_polyline_perimeters(text)
+        self.assertTrue(any(abs(value - 480) < .5 for value in perimeters.get('1', [])), f'cut perimeter {perimeters.get("1")}')
+        self.assertTrue(any(abs(value - 400) < .5 for value in perimeters.get('14', [])), f'stitch perimeter {perimeters.get("14")}')
+        self.assertIn('Units: METRIC', text)
+
+    def test_export_pdf(self):
+        large = Session()
+        large.add([(0, 0), (.5, 0), (.5, .7), (0, .7)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pattern.pdf'
+            pattern_export.write_pdf(path, large.document, '', 'A4')
+            text = path.read_text(encoding='latin-1')
+        self.assertTrue(text.startswith('%PDF-1.4'))
+        self.assertEqual(text.count('/Type /Page '), 9)
+        self.assertIn('/Helvetica', text)
+
+
+def _dxf_entities(text):
+    codes = []
+    lines = text.splitlines()
+    for index in range(0, len(lines) - 1, 2):
+        codes.append((int(lines[index].strip()), lines[index + 1].rstrip()))
+    return codes
+
+
+def _dxf_polyline_perimeters(text):
+    perimeters = {}
+    layer = None
+    points = None
+    x = None
+    y = None
+    for code, value in _dxf_entities(text):
+        if code == 0:
+            if value == 'POLYLINE':
+                points = []
+                x = y = None
+            elif value == 'VERTEX':
+                if points is not None and x is not None:
+                    points.append((x, y))
+                x = y = None
+            elif value == 'SEQEND':
+                if points is not None and layer is not None:
+                    if x is not None:
+                        points.append((x, y))
+                    perimeter = sum(((points[i][0] - points[i - 1][0]) ** 2 + (points[i][1] - points[i - 1][1]) ** 2) ** .5 for i in range(len(points)))
+                    perimeters.setdefault(layer, []).append(perimeter)
+                points = None
+                x = y = None
+        elif code == 8:
+            layer = value
+        elif code == 10 and points is not None:
+            x = float(value)
+        elif code == 20 and points is not None:
+            y = float(value)
+    return perimeters
 
 
 if __name__ == '__main__':

@@ -604,6 +604,7 @@ class MinimalCards:
             rows.append(('CHOICES', 'Seam allowance (all)', ('INSP_ALLOWANCE', ('0 cm', '0.5 cm', '1 cm', '1.5 cm', '2 cm'), '')))
             rows.append(('CHOICES', 'Solver', ('INSP_SOLVER', ('GPU', 'Nodes'), 'GPU' if scene.dd_solver == 'GPU' else 'Nodes')))
             rows.append(('MENU', 'SIZES_MENU', 'Sizes', scene.dd_size or 'Base'))
+            rows.append(('EXPORT_PATTERNS', 'Export patterns', 'DXF / PDF'))
             rows.append(('CHOICES', 'Skin offset', ('INSP_SKIN', SKIN_OFFSET, self.named_choice(scene.dd_skin_offset, SKIN_OFFSET))))
             rows.append(('CHOICES', 'Friction', ('INSP_FRICTION', FRICTION, self.named_choice(scene.dd_friction, FRICTION))))
             rows.append(('INSP_FIT', 'Fit design', 'Home'))
@@ -1387,6 +1388,8 @@ class MinimalCards:
             size = scene.dd_size
             factor = 1 + float(key.removeprefix('GRADE_SCALE_').removesuffix('%')) / 100
             self.run_edit(lambda: self.session.grade_proportional(size, factor, factor), 'Size scaled.')
+        elif key == 'EXPORT_PATTERNS':
+            bpy.ops.devil_designer.export_patterns('INVOKE_DEFAULT')
         elif key in {'SELECT_BOX', 'SELECT_LASSO'}:
             self.choose_tool('SELECT')
             self.armed_selection = key

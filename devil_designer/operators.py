@@ -1,5 +1,6 @@
 import traceback
 import bpy
+from bpy_extras.io_utils import ExportHelper
 from . import garment
 from .core import Session
 
@@ -242,5 +243,46 @@ class DD_OT_size_name(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _sized_path(base, size, extension):
+    stem = base
+    for candidate in ('.dxf', '.pdf'):
+        if stem.lower().endswith(candidate):
+            stem = stem[:-len(candidate)]
+            break
+    return stem + (f'-{size}' if size else '-Base') + extension
+
+
+class DD_OT_export_patterns(bpy.types.Operator, ExportHelper):
+    bl_idname = 'devil_designer.export_patterns'
+    bl_label = 'Export Patterns'
+    bl_description = 'Export pattern pieces as DXF-AAMA or tiled PDF'
+    bl_options = {'REGISTER'}
+    filename_ext = '.dxf'
+    filter_glob: bpy.props.StringProperty(default='*.dxf;*.pdf', options={'HIDDEN'})
+    format: bpy.props.EnumProperty(name='Format', items=[('DXF','DXF','DXF-AAMA'),('PDF','PDF','Tiled PDF')], default='DXF')
+    paper: bpy.props.EnumProperty(name='Paper', items=[('A4','A4','A4'),('LETTER','Letter','Letter')], default='A4')
+    all_sizes: bpy.props.BoolProperty(name='All sizes', default=False)
+    def execute(self,context):
+        from . import pattern_export
+        from .core import Document
+        def action():
+            scene = context.scene
+            document = Document.loads(scene.dd_document)
+            if not document.patterns:
+                raise ValueError('Draw at least one closed pattern first.')
+            extension = '.dxf' if self.format == 'DXF' else '.pdf'
+            sizes = [scene.dd_size] if not self.all_sizes else [''] + list(document.sizes)
+            base = bpy.path.abspath(self.filepath)
+            for size in sizes:
+                graded = document.graded(size)
+                path = base if len(sizes) == 1 else _sized_path(base, size, extension)
+                if self.format == 'DXF':
+                    pattern_export.write_dxf(path, graded, scene.name, size)
+                else:
+                    pattern_export.write_pdf(path, graded, size, self.paper)
+            return {'FINISHED'}
+        return run(self,action)
+
+
 CLASSES = (DD_OT_build_panels,DD_OT_arrange,DD_OT_simulate,DD_OT_stop,DD_OT_reset,
-           DD_OT_keep_drape,DD_OT_seam,DD_OT_demo,DD_OT_exact_shape,DD_OT_seam_length,DD_OT_size_name)
+           DD_OT_keep_drape,DD_OT_seam,DD_OT_demo,DD_OT_exact_shape,DD_OT_seam_length,DD_OT_size_name,DD_OT_export_patterns)
