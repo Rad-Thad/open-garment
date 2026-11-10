@@ -20,8 +20,8 @@ STRIP_WIDTH = 0.025
 PLATFORM = 0.03
 SETTLE_FRAMES = 400
 SUBSTEPS = 4
-ITERATIONS = 2
-HINGE_SCALE = 3.0
+ITERATIONS = 8
+HINGE_SCALE = 3.3
 
 
 def flexural_rigidity(bend_cm):
@@ -186,16 +186,13 @@ def main():
         for bend_cm in BEND_CM:
             target = 2.0 * bend_cm / 100.0
             result, nx, ny = run_cantilever(spacing, bend_cm, target)
-            mid = ny // 2
-            tip = result[(mid + 1) * nx - 1]
-            prev = result[(mid + 1) * nx - 2]
-            dx = float(tip[0] - prev[0])
-            dz = float(tip[2] - prev[2])
-            angle = math.degrees(math.atan2(-dz, dx)) if dx > 1e-9 else 90.0
             tip_z = float(result[nx - 1::nx, 2].mean())
-            gap = float(tip_z + result[nx - 1::nx, 0].mean() * TAN_41_5)
+            tip_x = float(result[nx - 1::nx, 0].mean())
+            gap = float(tip_z + tip_x * TAN_41_5)
+            ratio = 1.0 + gap / (target * TAN_41_5)
+            flag = 'OK' if 0.90 <= ratio <= 1.10 else 'ADJUST'
             print(f'spacing={spacing * 1000:.1f}mm bend={bend_cm}cm target={target * 100:.2f}cm '
-                  f'tip_angle={angle:.1f}deg gap={gap * 100:.2f}cm')
+                  f'gap={gap * 100:.2f}cm ratio={ratio:.3f} {flag}')
 
 
 if __name__ == '__main__':
