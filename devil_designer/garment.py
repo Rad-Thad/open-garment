@@ -116,6 +116,8 @@ def restore_drape(scene,obj,panels):
 
 def reset(context):
     stop(context)
+    from . import gpu_backend
+    gpu_backend._sessions.clear()
     remove_objects(generated(context.scene,'simulation'))
     remove_objects(generated(context.scene,'anchor'))
     remove_objects(generated(context.scene,'collider'))
