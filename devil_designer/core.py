@@ -204,6 +204,11 @@ def sample_path(vertices,closed):
     if not closed and vertices: result.append((vertices[-1].x,vertices[-1].y))
     return result
 
+
+def map_grades(vertex,transform):
+    if getattr(vertex,'grades',None):
+        vertex.grades={name:tuple(transform(delta)) for name,delta in vertex.grades.items()}
+
 @dataclass(frozen=True)
 class EdgeRef:
     pattern: str
@@ -587,6 +592,8 @@ class Document:
                 interpolated[name]=(da[0]+(db[0]-da[0])*fraction,da[1]+(db[1]-da[1])*fraction)
             v.grades=interpolated
         nodes.insert(nodes.index(a)+1,v)
+        if edge.path=='OUTER' and getattr(p,'edge_allowances',None) and a.id in p.edge_allowances:
+            p.edge_allowances[v.id]=p.edge_allowances[a.id]
         update_auto_handles(nodes,edge.path=='OUTER' or p.path(edge.path).closed)
         def remap(span):
             if span.full()!=edge.full(): return [span]
@@ -1564,6 +1571,7 @@ class Session(ConstructionMixin):
             v.x,v.y=place(v.x,v.y)
             if v.incoming is not None:v.incoming=turn(v.incoming)
             if v.outgoing is not None:v.outgoing=turn(v.outgoing)
+            map_grades(v,turn)
         for pid in whole_patterns:
             for anchor in cand_doc.anchors:
                 if anchor.pattern==pid:anchor.x,anchor.y=place(anchor.x,anchor.y)
@@ -1661,6 +1669,7 @@ class Session(ConstructionMixin):
                             v.x=2*cx-v.x
                             if v.incoming is not None:v.incoming=(-v.incoming[0],v.incoming[1])
                             if v.outgoing is not None:v.outgoing=(-v.outgoing[0],v.outgoing[1])
+                            map_grades(v,lambda d:(-d[0],d[1]))
                     for anchor in self.document.anchors:
                         if anchor.pattern==p.id:anchor.x=2*cx-anchor.x
                 for seam in self.document.seams:
@@ -1686,6 +1695,7 @@ class Session(ConstructionMixin):
                 v.x=2*cx-v.x
                 if v.incoming is not None:v.incoming=(-v.incoming[0],v.incoming[1])
                 if v.outgoing is not None:v.outgoing=(-v.outgoing[0],v.outgoing[1])
+                map_grades(v,lambda d:(-d[0],d[1]))
         return self.commit(op_pts)
 
     def flip_vertical(self):
@@ -1704,6 +1714,7 @@ class Session(ConstructionMixin):
                             v.y=2*cy-v.y
                             if v.incoming is not None:v.incoming=(v.incoming[0],-v.incoming[1])
                             if v.outgoing is not None:v.outgoing=(v.outgoing[0],-v.outgoing[1])
+                            map_grades(v,lambda d:(d[0],-d[1]))
                     for anchor in self.document.anchors:
                         if anchor.pattern==p.id:anchor.y=2*cy-anchor.y
                 for seam in self.document.seams:
@@ -1729,6 +1740,7 @@ class Session(ConstructionMixin):
                 v.y=2*cy-v.y
                 if v.incoming is not None:v.incoming=(v.incoming[0],-v.incoming[1])
                 if v.outgoing is not None:v.outgoing=(v.outgoing[0],-v.outgoing[1])
+                map_grades(v,lambda d:(d[0],-d[1]))
         return self.commit(op_pts)
 
     def rotate(self,angle_degrees,pivot=None,confirm=False):
@@ -2178,13 +2190,14 @@ class Session(ConstructionMixin):
         def apply():
             hinge=locate(points[0]);tip=locate(points[1])
             nodes=p.vertices;start=nodes.index(hinge);order=nodes[start:]+nodes[:start];end=order.index(tip)
-            copy_tip=Vertex(tip.x,tip.y)
+            copy_tip=Vertex(tip.x,tip.y,grades=dict(tip.grades) if getattr(tip,'grades',None) else None)
             spin=lambda v:None if v is None else (v[0]*cos-v[1]*sin,v[0]*sin+v[1]*cos)
             centre=(hinge.x,hinge.y)
             for v in (*order[1:end],copy_tip):
                 dx,dy=v.x-centre[0],v.y-centre[1]
                 v.x,v.y=centre[0]+dx*cos-dy*sin,centre[1]+dx*sin+dy*cos
                 v.incoming=spin(v.incoming);v.outgoing=spin(v.outgoing)
+                map_grades(v,spin)
             p.vertices=[hinge,*order[1:end],copy_tip,tip,*order[end+1:]]
             p.paths.remove(path)
         result=self.commit(apply);self.path,self.corner='OUTER',None;return result
@@ -2227,6 +2240,7 @@ class Session(ConstructionMixin):
             for _,nodes,_,_ in gone.loops():
                 for v in nodes:
                     v.x,v.y=place(v.x,v.y);v.incoming=spin(v.incoming);v.outgoing=spin(v.outgoing)
+                    map_grades(v,spin)
             for anchor in self.document.anchors:
                 if anchor.pattern==gone.id:anchor.x,anchor.y=place(anchor.x,anchor.y);anchor.pattern=keep.id
             nodes=keep.vertices;start=nodes.index(a1);walk=nodes[start:]+nodes[:start]
@@ -2323,11 +2337,14 @@ def clone_pattern(pattern,offset=(0,0),reflection=None):
             p=curves.reflect(p,*reflection)
             if v.incoming is not None:v.incoming=curves.reflect(v.incoming,*reflection,vector=True)
             if v.outgoing is not None:v.outgoing=curves.reflect(v.outgoing,*reflection,vector=True)
+            map_grades(v,lambda d:curves.reflect(d,*reflection,vector=True))
         v.x,v.y=curves.add(p,offset)
     for v,orig in zip(result.vertices,pattern.vertices):convert(v,orig)
     for path,orig_path in zip(result.paths,pattern.paths):
         old=path.id;path.id=uid();mapping[old]=path.id
         for v,orig in zip(path.vertices,orig_path.vertices):convert(v,orig)
+    if getattr(result,'edge_allowances',None):
+        result.edge_allowances={mapping[key]:value for key,value in result.edge_allowances.items() if key in mapping}
     result.features=[]
     result._id_map=mapping
     return result

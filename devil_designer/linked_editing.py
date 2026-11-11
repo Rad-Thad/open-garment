@@ -39,7 +39,7 @@ def _translation(before,after):
 
 
 def _mirror(document,pair,source_id):
-    from .core import Path,uid
+    from .core import Path,uid,map_grades
     first,second=pair['members'];forward=source_id==first
     source=document.find(source_id);target=document.find(second if forward else first)
     mapping=pair['mapping'] if forward else {value:key for key,value in pair['mapping'].items()}
@@ -65,6 +65,7 @@ def _mirror(document,pair,source_id):
             for key in ('incoming','outgoing'):
                 handle=getattr(vertex,key)
                 if handle is not None:setattr(vertex,key,(-handle[0],handle[1]))
+            map_grades(vertex,lambda d:(-d[0],d[1]))
         return result
     target.vertices=vertices(source.vertices)
     target.paths=[Path(path.name,vertices(path.vertices),path.closed,path.role,identity(path.id)) for path in source.paths]

@@ -45,6 +45,9 @@ def inspect_commit_metadata(records, errors):
 def inspect_payload(name, payload, errors):
     is_icon = name.startswith('devil_designer/assets/icons/') and name.endswith('.png')
     is_docs_image = name.startswith('docs-site/') and name.endswith('.png')
+    is_wheel = name.startswith('devil_designer/wheels/') and name.endswith('.whl')
+    if is_wheel:
+        return
     if is_icon or is_docs_image:
         kind = 'icon image' if is_icon else 'image'
         if not payload.startswith(b'\x89PNG\r\n\x1a\n'):

@@ -54,4 +54,5 @@ fn sphere() {
     assert!(pos.iter().all(|v| v.is_finite()), "positions diverged");
     assert!(closest < 0.35, "cloth never reached the sphere surface, closest {closest}");
     assert!(farthest < 1.5, "cloth fell through the sphere, farthest {farthest}");
+    assert!(closest >= 0.3 * (std::f32::consts::PI / 40.0).cos() * (std::f32::consts::PI / 48.0).cos() + params.body_margin - 0.002, "cloth penetrated the sphere too deeply, closest {closest}");
 }

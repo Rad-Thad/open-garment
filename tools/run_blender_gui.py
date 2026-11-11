@@ -7,6 +7,7 @@ import bpy
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / 'scratch' / 'solver_site'))
 sys.path.insert(0, str(ROOT))
 from tools.workspace import prepare_scratch
 

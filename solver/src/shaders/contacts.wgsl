@@ -106,7 +106,7 @@ fn closest_bary(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, c: vec3<f32>) -> vec3<
   let denom = 1.0 / (va + vb + vc);
   let v = vb * denom;
   let w = vc * denom;
-  return vec3<f32>(1.0 - v - w, v, w);
+  return vec3<f32>(v, w, 1.0 - v - w);
 }
 
 @compute @workgroup_size(64)
@@ -162,7 +162,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   if (params.self_thickness > 0.0) {
     var self_delta = vec3<f32>(0.0);
-    let rc = floor((rest_pos[i].xyz - params.hash_min.xyz) * params.inv_hash_cell_size);
+    let rc = floor((gp - params.hash_min.xyz) * params.inv_hash_cell_size);
     let rci = vec3<i32>(rc);
     let partner = vert_attr[i].partner;
     for (var dx = -1; dx <= 1; dx = dx + 1) {

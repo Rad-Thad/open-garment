@@ -94,7 +94,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let wd = select(state[d].w, 0.0, vert_attr[d].pinned != 0u);
   let wsum = wa * dot(g1, g1) + wb * dot(g2, g2) + wc * dot(g3, g3) + wd * dot(g4, g4);
   let alpha = hinge_compliance[j] * params.h2_inv;
-  let dl = -(error + alpha * hinge_lambda[j]) / (wsum + alpha);
+  let denom = wsum + alpha;
+  if (denom <= 0.0) { return; }
+  let dl = -(error + alpha * hinge_lambda[j]) / denom;
   hinge_lambda[j] = hinge_lambda[j] + dl;
   state[a] = vec4<f32>(x1 - wa * dl * g1, state[a].w);
   state[b] = vec4<f32>(x2 - wb * dl * g2, state[b].w);

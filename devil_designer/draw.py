@@ -442,11 +442,6 @@ class Renderer:
                     self.lines(centers,(*ACCENT[:3],.4),3.6)
                     for center in centers:
                         self.dot(center,4.5,(*ACCENT[:3],.85))
-                graded_outlines = {}
-                for size_name in (getattr(ed.session.document, 'sizes', []) or []):
-                    if size_name == getattr(ed.session.document, 'base_size', ''):
-                        continue
-                    graded_outlines[size_name] = {pattern.id: pattern.outline() for pattern in ed.session.document.graded(size_name).patterns}
                 for index, source in enumerate(ed.session.document.patterns):
                     pat = ed.preview_pattern(source)
                     selected = (pat.id in ed.session.selected_patterns) if ed.session.selected_patterns else (ed.session.selected == pat.id)
@@ -462,11 +457,12 @@ class Renderer:
                     color = (.70, .76, .82)
                     opacity = .10 if selected else .055
                     self.fill_pattern(pat.id, world, outline, (*color, opacity), holes, view, c)
-                    for outlines in graded_outlines.values():
-                        if source.id in outlines:
-                            graded_screen = [view.screen(point, c) for point in outlines[source.id]]
-                            self.lines(graded_screen + graded_screen[:1], TEXT_SUB, 1, strip=True)
-                    cut = production.cut_outline(ed.session.document, pat)
+                    for size_name in (getattr(ed.session.document, 'sizes', []) or []):
+                        if size_name == getattr(ed.session.document, 'base_size', ''):
+                            continue
+                        graded_screen = [view.screen(point, c) for point in production.graded_outline(pat, size_name)]
+                        self.lines(graded_screen + graded_screen[:1], TEXT_SUB, 1, strip=True)
+                    cut = production.cut_outline(pat)
                     if cut != world:
                         cut_screen = [view.screen(point, c) for point in cut]
                         self.lines(cut_screen + cut_screen[:1], TEXT_SUB, 1, strip=True)

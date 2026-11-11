@@ -188,6 +188,7 @@ def restart_from_pose(obj):
     edges = edges.reshape(-1, 2)
     write(mesh, 'dd_seam_start', 'FLOAT', 'EDGE', np.linalg.norm(start[edges[:, 0]] - start[edges[:, 1]], axis=1))
     write(mesh, 'dd_pin_target', 'FLOAT_VECTOR', 'POINT', start)
+    write(mesh, 'dd_start_position', 'FLOAT_VECTOR', 'POINT', start)
     if gpu_backend.owns(obj):
         gpu_backend.invalidate(obj)
 
@@ -229,6 +230,11 @@ def strengthen(obj, vertices, multiplier):
     mesh.attributes['dd_bend_compliance'].data.foreach_get('value', bending)
     bending[chosen] /= multiplier ** 2
     write(mesh, 'dd_bend_compliance', 'FLOAT', 'POINT', bending)
+    for name in ('dd_flex_warp', 'dd_flex_weft', 'dd_flex_bias'):
+        values = np.empty(len(mesh.vertices), dtype=np.float32)
+        mesh.attributes[name].data.foreach_get('value', values)
+        values[chosen] *= multiplier ** 2
+        write(mesh, name, 'FLOAT', 'POINT', values)
     if gpu_backend.owns(obj):
         gpu_backend.invalidate(obj)
 
@@ -322,7 +328,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     edges = edges.reshape(-1, 2)
     loose = np.array([edge.is_loose for edge in mesh.edges], dtype=bool)
     near_seam = seam_rings(edges, loose, count)
-    links = bend_links(rest, edges[~loose], bending >= LINK_MIN_BENDING)
+    links = bend_links(rest, edges[~loose], (bending >= LINK_MIN_BENDING) & ~measured)
     add_edges(mesh, links)
     edges = np.concatenate((edges, links))
     linked = np.concatenate((np.zeros(len(loose), dtype=bool), np.ones(len(links), dtype=bool)))
@@ -419,6 +425,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     write(mesh, 'dd_pinned', 'BOOLEAN', 'POINT', held)
     write(mesh, 'dd_tacked', 'BOOLEAN', 'POINT', tacked)
     write(mesh, 'dd_pin_target', 'FLOAT_VECTOR', 'POINT', start)
+    write(mesh, 'dd_start_position', 'FLOAT_VECTOR', 'POINT', start)
     write(mesh, 'dd_tack_vertices', 'FLOAT_VECTOR', 'POINT', surface)
     write(mesh, 'dd_tack_weights', 'FLOAT_VECTOR', 'POINT', shares)
     write(mesh, 'dd_pin_compliance', 'FLOAT', 'POINT', np.where(tacked, TACK_COMPLIANCE, PIN_COMPLIANCE))
@@ -446,7 +453,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     if mod is None:
         set_input(obj, 'Grab Index', -1)
         set_input(obj, 'Grab Radius', .05)
-        set_input(obj, 'Iterations', gpu_backend.ITERATIONS)
+        set_input(obj, 'Iterations', gpu_backend.iterations(scene.dd_spacing))
         set_input(obj, 'Seam Seconds', gpu_backend.SEAM_SECONDS)
         set_input(obj, 'Damping', gpu_backend.DAMPING)
     obj.update_tag()

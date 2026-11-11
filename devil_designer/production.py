@@ -23,15 +23,14 @@ def _tangent(control, t):
     return (dx / length, dy / length)
 
 
-def _segment(document, pattern, index, sign):
-    edge = document.edge(pattern.id, index)
-    control = document.edge_curve(edge)
+def _segment(pattern, index, sign):
     a = pattern.vertices[index]
     b = pattern.vertices[(index + 1) % len(pattern.vertices)]
+    control = curves.controls(a, b)
     if a.outgoing is None and b.incoming is None:
         ts = (0.0, 1.0)
     else:
-        ts = tuple(k / 24 for k in range(24))
+        ts = tuple(k / 24 for k in range(25))
     samples = [curves.evaluate(control, t) for t in ts]
     tangents = [_tangent(control, t) for t in ts]
     distance = segment_allowance(pattern, index)
@@ -57,15 +56,25 @@ def _join(previous, current, vertex):
     return [miter]
 
 
-def cut_outline(document, pattern):
+def cut_outline(pattern):
     count = len(pattern.vertices)
     allowances = [segment_allowance(pattern, index) for index in range(count)]
     if all(value == 0.0 for value in allowances):
         return pattern.outline()
     sign = 1 if area(pattern.outline()) > 0 else -1
-    segments = [_segment(document, pattern, index, sign) for index in range(count)]
+    segments = [_segment(pattern, index, sign) for index in range(count)]
     result = []
     for index in range(count):
         result.extend(_join(segments[(index - 1) % count], segments[index], pattern.vertices[index]))
         result.extend(segments[index]['points'][1:-1])
     return result
+
+
+def graded_outline(pattern, size):
+    import dataclasses
+    from .core import sample_path
+    copies = []
+    for vertex in pattern.vertices:
+        dx, dy = (getattr(vertex, 'grades', None) or {}).get(size, (0.0, 0.0))
+        copies.append(dataclasses.replace(vertex, x=vertex.x + dx, y=vertex.y + dy))
+    return sample_path(copies, True)

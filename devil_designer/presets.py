@@ -2,6 +2,7 @@ import math
 
 MASS_SCALE = 1000.0
 STRETCH_COMPLIANCE = 1.0e-8
+HINGE_SCALE = 3.0
 
 
 PRESETS = {

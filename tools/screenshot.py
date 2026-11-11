@@ -9,15 +9,8 @@ from PIL import Image
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.workspace import prepare_scratch
+from tools.workspace import blender_path, prepare_scratch
 from tools.check_comments import check_source
-BLENDER_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"
-if not os.path.exists(BLENDER_PATH):
-    for p in [r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
-              r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe"]:
-        if os.path.exists(p):
-            BLENDER_PATH = p
-            break
 
 def capture(output_name="screenshot_app.png", full_mode=False,
             empty=False, panel_size=None, demo=False, tool=None, section=None, query='', reveal_3d=False, cursor_controls=False, card_kind=None, trace_image=False):
@@ -178,7 +171,7 @@ with bpy.context.temp_override(area=area, region=region):
     check_source(script, str(tmp_script))
     tmp_script.write_text(script, encoding="utf-8")
     
-    cmd = [BLENDER_PATH, "--factory-startup", "--python", str(tmp_script)]
+    cmd = [blender_path(), "--factory-startup", "--python", str(tmp_script)]
     print("Launching Blender to capture the interface (splash disabled, clean viewport)...")
     res = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     

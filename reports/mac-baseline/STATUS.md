@@ -65,3 +65,6 @@ BENCH solver=NODES spacing=0.012 vertices=3342 ms_per_frame=11.648
 BENCH solver=NODES spacing=0.006 vertices=12934 ms_per_frame=28.789
 ```
 
+## R1 re-check (2026-11-12)
+
+gui_design and gui_matrix were re-run 3× at `bb73ec8` and once at `550c94e`; the first-failure text is identical to the rows above, so both remain pre-existing environment drift on this Mac, not a fork regression.

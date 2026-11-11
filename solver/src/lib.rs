@@ -235,9 +235,9 @@ impl Solver {
 
     fn set_pins(&mut self, mask: &Bound<'_, PyAny>, targets: &Bound<'_, PyAny>) -> PyResult<()> {
         let mask = u8_array(mask, "mask")?;
-        let n = mask.len();
+        check_len(mask.len(), self.inner.vertex_count(), "mask")?;
         let targets = f32_array(targets, "targets")?;
-        check_len(targets.len(), n * 3, "targets")?;
+        check_len(targets.len(), mask.len() * 3, "targets")?;
         self.inner.set_pins(&mask, &targets);
         Ok(())
     }

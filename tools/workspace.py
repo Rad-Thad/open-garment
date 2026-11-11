@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import stat
 import tomllib
 
@@ -7,6 +8,22 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / 'scratch'
 DIST = ROOT / 'dist'
+
+
+def blender_path():
+    if os.environ.get('DD_BLENDER'):
+        return os.environ['DD_BLENDER']
+    candidates = [
+        '/Applications/Blender.app/Contents/MacOS/Blender',
+        r'C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe',
+        r'C:\Program Files\Blender Foundation\Blender 5.2\blender.exe',
+        r'C:\Program Files\Blender Foundation\Blender 4.2\blender.exe',
+        shutil.which('blender'),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    raise SystemExit('Set DD_BLENDER to the Blender 5.2 executable.')
 
 
 def extension_archive():

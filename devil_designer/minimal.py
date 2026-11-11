@@ -41,6 +41,8 @@ def allowance_label(value, labels):
         if abs(value - float(label.split()[0]) / 100) < 1e-6:
             return label
     return f'{value * 100:g} cm'
+def choices_height(row, single):
+    return math.ceil(len(row[2][1]) / 3) * 24 + 22 if len(row[2][1]) > 4 else single
 def _fabric_vals(scene):
     from .presets import measured_to_preset
     if scene.dd_fabric_units == 'MEASURED':
@@ -663,6 +665,8 @@ class MinimalCards:
         elif kind == 'SIZES':
             title = 'Sizes'
             rows = []
+            if not getattr(doc, 'base_size', ''):
+                rows.append(('SET_SIZE_', 'Base', 'Active' if not scene.dd_size else ''))
             for name in list(getattr(doc, 'sizes', []) or []):
                 state = 'Active' if scene.dd_size == name else 'Base' if name == getattr(doc, 'base_size', '') else ''
                 rows.append((f'SET_SIZE_{name}', name, state))
@@ -977,7 +981,7 @@ class MinimalCards:
                 controls.append((Rect(round(card_x + 10 * scale), top_other, inner_w, round((row_pitch - 4) * scale)), r))
             return rect, title, controls
         if is_menu:
-            menu_heights = [48 if row[0] == 'CHOICES' else 34 if row[0] == 'SLIDER' else 18 for row in rows]
+            menu_heights = [choices_height(row, 48) if row[0] == 'CHOICES' else 34 if row[0] == 'SLIDER' else 18 for row in rows]
             gap = 1
             inner_pad = round(4 * scale)
             item_w = round(width - 2 * inner_pad)
@@ -1005,7 +1009,7 @@ class MinimalCards:
             if r_key == 'CHOICES_FABRIC':
                 row_heights.append(math.ceil(len(row[2][1]) / 3) * 24 + 22 if len(row[2][1]) > 4 else 42)
             elif r_key == 'CHOICES':
-                row_heights.append(48)
+                row_heights.append(choices_height(row, 48))
             elif r_key.startswith('PREVIEW_'):
                 row_heights.append(180 if self.canvas_layout.panel.h / scale >= 560 else 130)
             elif r_key in {'LIBRARY_NAME', 'LIBRARY_TAG_EDIT'}:
@@ -1018,9 +1022,10 @@ class MinimalCards:
                 row_heights.append(30)
         if kind == 'PIECE':
             choices = sum(r[0] == 'CHOICES' for r in rows)
-            avail = self.canvas_layout.panel.h / scale - 130 - sum(row_gaps) - 44 * choices
+            choice_heights = sum(choices_height(r, 44) for r in rows if r[0] == 'CHOICES')
+            avail = self.canvas_layout.panel.h / scale - 130 - sum(row_gaps) - choice_heights
             row_height = min(30, avail / max(1, len(rows) - choices))
-            row_heights = [22 if r[0] == 'INFO' else 44 if r[0] == 'CHOICES' else max(24, row_height) for r in rows]
+            row_heights = [22 if r[0] == 'INFO' else choices_height(r, 44) if r[0] == 'CHOICES' else max(24, row_height) for r in rows]
         excess = max(0, 48 + sum(row_heights) + sum(row_gaps) - max_card_h / scale)
         for index, row in enumerate(rows):
             if row[0].startswith('PREVIEW_'):
@@ -1308,6 +1313,7 @@ class MinimalCards:
             prop_map = {'dd_fabric_structural': 'structural',
                         'dd_fabric_bending': 'bending', 'dd_fabric_density': 'density', **GRAIN_SETTINGS}
             prop = prop_map[key]
+            drop_measured = key in {'dd_fabric_structural', 'dd_fabric_bending', 'dd_fabric_density'}
             val = getattr(self._scene, key)
             doc = self.session.document
             pattern = self.session.document.find(self.session.selected)
@@ -1316,6 +1322,8 @@ class MinimalCards:
                 customs = getattr(doc, 'custom_presets', {})
                 if getattr(pattern, 'fabric_override', False) and active in customs:
                     customs[active][prop] = val
+                    if drop_measured:
+                        customs[active].pop('measured', None)
                     self.session.commit(lambda: None)
                 else:
                     base = f'{pattern.name} Fabric'
@@ -1328,6 +1336,8 @@ class MinimalCards:
                     from .presets import resolve_preset
                     vals = resolve_preset(active, customs)
                     vals[prop] = val
+                    if drop_measured:
+                        vals.pop('measured', None)
                     self.run_edit(lambda: (self.session.set_custom_preset(cand, vals), self.session.set_fabric_override(cand)),
                                   f'{pattern.name} fabric override updated.')
             else:
@@ -1335,6 +1345,8 @@ class MinimalCards:
                 customs = getattr(doc, 'custom_presets', {})
                 if active in customs:
                     customs[active][prop] = val
+                    if drop_measured:
+                        customs[active].pop('measured', None)
                     self.session.commit(lambda: None)
                 else:
                     base = f'{active.title()} Custom'
@@ -1347,6 +1359,8 @@ class MinimalCards:
                     from .presets import resolve_preset
                     vals = resolve_preset(active, customs)
                     vals[prop] = val
+                    if drop_measured:
+                        vals.pop('measured', None)
                     self.run_edit(lambda: (self.session.set_custom_preset(cand, vals), self.session.set_document_preset(cand)),
                                   f'Default fabric updated to {cand}.')
                     self._scene.dd_fabric = cand

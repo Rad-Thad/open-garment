@@ -13,9 +13,9 @@ def pieces(document):
     result = []
     for pattern in document.patterns:
         outline = pattern.outline()
-        cut = production.cut_outline(document, pattern)
-        internal = [path.outline() for path in pattern.paths if path.role == 'INTERNAL']
-        cutouts = [path.outline() for path in pattern.paths if path.role in ('HOLE', 'SLIT')]
+        cut = production.cut_outline(pattern)
+        internal = [(path.outline(), path.closed) for path in pattern.paths if path.role == 'INTERNAL']
+        cutouts = [(path.outline(), path.closed) for path in pattern.paths if path.role in ('HOLE', 'SLIT')]
         corners = [(vertex.x, vertex.y) for vertex in pattern.vertices if getattr(vertex, 'point_type', 'CORNER') == 'CORNER']
         xs = [point[0] for point in outline]
         ys = [point[1] for point in outline]
@@ -128,10 +128,10 @@ def write_dxf(path, document, style_name, size_name):
         _polyline(lines, '1', piece['cut'], True)
         if _differs(piece['stitch'], piece['cut']):
             _polyline(lines, '14', piece['stitch'], True)
-        for internal in piece['internal']:
-            _polyline(lines, '8', internal, False)
-        for cutout in piece['cutouts']:
-            _polyline(lines, '11', cutout, True)
+        for internal, closed in piece['internal']:
+            _polyline(lines, '8', internal, closed)
+        for cutout, closed in piece['cutouts']:
+            _polyline(lines, '11', cutout, closed)
         corner_keys = {_f(x * MM) + ',' + _f(y * MM) for x, y in piece['corners']}
         for corner in piece['corners']:
             _point(lines, '2', corner)
@@ -163,7 +163,9 @@ def write_dxf(path, document, style_name, size_name):
     _text(lines, '1', 'Units: METRIC', (0, -.18), .02)
     _emit(lines, 0, 'ENDSEC')
     _emit(lines, 0, 'EOF')
-    path.write_text('\r\n'.join(lines) + '\r\n', encoding='ascii')
+    data = ('\r\n'.join(lines) + '\r\n').encode('ascii', 'replace')
+    with open(path, 'wb') as handle:
+        handle.write(data)
 
 
 def _base_size(document):
@@ -212,31 +214,35 @@ def write_pdf(path, document, size_name, paper):
     xref = 'xref\n0 ' + str(len(offsets)) + '\n0000000000 65535 f \n'
     xref += ''.join(f'{offset:010d} 00000 n \n' for offset in offsets[1:])
     trailer = f'trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{cursor}\n%%EOF\n'
-    path.write_text(body + xref + trailer, encoding='latin-1')
+    data = (body + xref + trailer).encode('latin-1')
+    with open(path, 'wb') as handle:
+        handle.write(data)
 
 
 def _pdf_page(all_pieces, min_x, min_y, size_name, col, row, page_w, page_h, width, height):
-    scale = PDF_SCALE * MM
-    tx = MARGIN * PDF_SCALE - col * page_w * PDF_SCALE
-    ty = MARGIN * PDF_SCALE - row * page_h * PDF_SCALE
-    operations = ['q', f'{_f(scale)} 0 0 {_f(scale)} {_f(tx)} {_f(ty)} cm']
+    def place(point):
+        return (((point[0] - min_x) * MM - col * page_w + MARGIN) * PDF_SCALE,
+                ((point[1] - min_y) * MM - row * page_h + MARGIN) * PDF_SCALE)
+    operations = []
     for piece in all_pieces:
-        _pdf_polyline(operations, piece['cut'], '0.5', None, True)
-        _pdf_polyline(operations, piece['stitch'], '0.3', '[3 3] 0 d', True)
-        for internal in piece['internal']:
-            _pdf_polyline(operations, internal, '0.3', None, False)
-        for cutout in piece['cutouts']:
-            _pdf_polyline(operations, cutout, '0.3', None, True)
+        cut = [place(point) for point in piece['cut']]
+        stitch = [place(point) for point in piece['stitch']]
+        _pdf_polyline(operations, cut, '0.5', None, True)
+        _pdf_polyline(operations, stitch, '0.3', '[3 3] 0 d', True)
+        for internal, closed in piece['internal']:
+            _pdf_polyline(operations, [place(point) for point in internal], '0.3', None, closed)
+        for cutout, closed in piece['cutouts']:
+            _pdf_polyline(operations, [place(point) for point in cutout], '0.3', None, closed)
         grain = piece['grain']
-        _pdf_segment(operations, grain[0], grain[1], '0.3', None)
-        _pdf_arrow(operations, grain)
+        _pdf_segment(operations, place(grain[0]), place(grain[1]), '0.3', None)
+        _pdf_arrow(operations, (place(grain[0]), place(grain[1])))
         xs = [point[0] for point in piece['cut']]
         ys = [point[1] for point in piece['cut']]
         label = f"{piece['name']}  {size_name or 'Base'}"
+        cx, cy = place(((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
         operations.append('BT /F1 8 Tf')
-        operations.append(f'{_f((min(xs) + max(xs)) / 2 * MM)} {_f((min(ys) + max(ys)) / 2 * MM)} Td')
+        operations.append(f'{_f(cx)} {_f(cy)} Td')
         operations.append(f'({_pdf_escape(label)}) Tj ET')
-    operations.append('Q')
     half = 4 * PDF_SCALE
     for px in (MARGIN * PDF_SCALE, (width - MARGIN) * PDF_SCALE):
         for py in (MARGIN * PDF_SCALE, (height - MARGIN) * PDF_SCALE):
@@ -263,9 +269,9 @@ def _pdf_polyline(operations, points, width, dash, closed):
         return
     _pdf_start(operations, width, dash)
     x0, y0 = points[0]
-    operations.append(f'{_f(x0 * MM)} {_f(y0 * MM)} m')
+    operations.append(f'{_f(x0)} {_f(y0)} m')
     for x, y in points[1:]:
-        operations.append(f'{_f(x * MM)} {_f(y * MM)} l')
+        operations.append(f'{_f(x)} {_f(y)} l')
     if closed:
         operations.append('h')
     operations.append('S')
@@ -273,8 +279,8 @@ def _pdf_polyline(operations, points, width, dash, closed):
 
 def _pdf_segment(operations, start, end, width, dash):
     _pdf_start(operations, width, dash)
-    operations.append(f'{_f(start[0] * MM)} {_f(start[1] * MM)} m')
-    operations.append(f'{_f(end[0] * MM)} {_f(end[1] * MM)} l')
+    operations.append(f'{_f(start[0])} {_f(start[1])} m')
+    operations.append(f'{_f(end[0])} {_f(end[1])} l')
     operations.append('S')
 
 
@@ -284,7 +290,7 @@ def _pdf_arrow(operations, grain):
     dy = end[1] - start[1]
     length = math.hypot(dx, dy) or 1.0
     ux, uy = dx / length, dy / length
-    tip = (end[0] * MM, end[1] * MM)
+    tip = (end[0], end[1])
     back = (tip[0] - ux * 6, tip[1] - uy * 6)
     left = (back[0] - uy * 3, back[1] + ux * 3)
     right = (back[0] + uy * 3, back[1] - ux * 3)
@@ -299,4 +305,4 @@ def _pdf_start(operations, width, dash):
 
 
 def _pdf_escape(text):
-    return str(text).replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+    return str(text).encode('latin-1', 'replace').decode('latin-1').replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')

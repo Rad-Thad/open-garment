@@ -9,6 +9,7 @@ const WORKGROUP: u32 = 64;
 const SLOT: u32 = 256;
 const MAX_SUBSTEPS: u32 = 64;
 const MAX_COLORS: u32 = 64;
+const CONTACT_STRIDE: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -56,14 +57,6 @@ struct VertAttr {
     partner: i32,
     weight: f32,
     pinned: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct ContactOut {
-    delta: [f32; 3],
-    normal: [f32; 3],
-    touching: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -370,7 +363,7 @@ fn build_bind_groups(
             entries: &[
                 entry(0, hash_head),
                 entry(1, hash_next),
-                entry(2, rest_pos),
+                entry(2, state),
                 entry(3, index_data),
                 params_entry(4),
             ],
@@ -639,7 +632,7 @@ impl Solver {
             false,
         );
         let pairs = storage_buffer(&device, bytemuck::cast_slice(&reordered_pairs), "pairs", false);
-        let contact_out = storage_buffer(&device, &vec![0u8; n * 28], "contact_out", false);
+        let contact_out = storage_buffer(&device, &vec![0u8; n * CONTACT_STRIDE], "contact_out", false);
         let hash_head = storage_buffer(&device, &vec![0xFFu8; (hash_s * 4) as usize], "hash_head", false);
         let hash_next = storage_buffer(&device, &vec![0xFFu8; (t * 4).max(4)], "hash_next", false);
         let rest_pos = storage_buffer(&device, bytemuck::cast_slice(&rest_data), "rest_pos", false);
@@ -734,10 +727,14 @@ impl Solver {
             params: *params,
             vert_attr_host,
             cloth_tris_host: triangles.to_vec(),
-            cached: vec![0.0; n * 3],
+            cached: positions.to_vec(),
         };
         solver.upload_all_params();
         Ok(solver)
+    }
+
+    pub fn vertex_count(&self) -> usize {
+        self.n as usize
     }
 
     pub fn set_collider(&mut self, positions: &[f32], triangles: &[u32]) {
@@ -878,7 +875,7 @@ impl Solver {
                 pass.set_bind_group(0, &self.bg.integrate, &[param_off]);
                 pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
             }
-            for _ in 0..iterations {
+            for it in 0..iterations {
                 for c in 0..self.n_colors {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                     pass.set_pipeline(&self.pipelines.pairs);
@@ -887,13 +884,15 @@ impl Solver {
                     let count = self.color_count(c);
                     pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
                 }
-                for c in 0..self.hinge_n_colors {
-                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                    pass.set_pipeline(&self.pipelines.hinges);
-                    let color_off = (c * SLOT) as u32;
-                    pass.set_bind_group(0, &self.bg.hinges, &[param_off, color_off]);
-                    let count = self.hinge_color_counts[c as usize];
-                    pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
+                if it % 2 == 0 {
+                    for c in 0..self.hinge_n_colors {
+                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                        pass.set_pipeline(&self.pipelines.hinges);
+                        let color_off = (c * SLOT) as u32;
+                        pass.set_bind_group(0, &self.bg.hinges, &[param_off, color_off]);
+                        let count = self.hinge_color_counts[c as usize];
+                        pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
+                    }
                 }
             }
             if self.params.self_thickness > 0.0 {

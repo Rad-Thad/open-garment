@@ -3,29 +3,13 @@ import sys
 import time
 import argparse
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT))
-from tools.workspace import SCRATCH, clean_scratch, extension_archive, prepare_scratch
-BLENDER_PATH = os.environ.get('DD_BLENDER')
-if not BLENDER_PATH:
-    candidates = [
-        r"/Applications/Blender.app/Contents/MacOS/Blender",
-        r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe",
-        r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
-        r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe",
-        shutil.which('blender'),
-    ]
-    for p in candidates:
-        if p and os.path.exists(p):
-            BLENDER_PATH = p
-            break
-    else:
-        raise SystemExit('Set DD_BLENDER to the Blender 5.2 executable.')
+from tools.workspace import SCRATCH, blender_path, clean_scratch, extension_archive, prepare_scratch
 
 def run_cmd(cmd, cwd=str(ROOT), desc="", env=None):
     if desc:
@@ -61,20 +45,23 @@ def do_tests():
 
     print("\n=== RUNNING REAL-BLENDER BACKGROUND & LOAD SMOKE SUITES ===")
     for t in ["blender_smoke.py", "blender_garment.py", "blender_advanced.py", "blender_silhouette.py",
-              "blender_density.py", "blender_arrangement.py", "blender_tack_binding.py", "blender_tracing.py", "blender_layering.py", "blender_piece_states.py", "blender_sewing_preview.py", "blender_xpbd.py", "blender_matrix.py"]:
-        if not run_cmd([BLENDER_PATH, "--background", "--factory-startup", "--python-exit-code", "1", "--python", f"tests/{t}"],
+              "blender_density.py", "blender_arrangement.py", "blender_tack_binding.py", "blender_tracing.py", "blender_layering.py", "blender_piece_states.py", "blender_sewing_preview.py", "blender_xpbd.py", "blender_matrix.py", "blender_production.py"]:
+        if not run_cmd([blender_path(), "--background", "--factory-startup", "--python-exit-code", "1", "--python", f"tests/{t}"],
                        desc=f"Blender Background: {t}"):
             return False
 
     if not run_cmd([sys.executable, "tools/build_solver.py"], desc="Build GPU solver wheel"):
         return False
-    if not run_cmd([BLENDER_PATH, "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_gpu.py"],
+    if not run_cmd([blender_path(), "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_gpu.py"],
                    desc="Blender Background: blender_gpu.py", env={'DD_SOLVER': 'GPU'}):
+        return False
+    if not run_cmd([blender_path(), "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", "gui_core_workflow"],
+                   desc="In-Engine GUI (GPU solver): gui_core_workflow", env={'DD_SOLVER': 'GPU'}):
         return False
 
     print("\n=== RUNNING REAL-BLENDER IN-ENGINE GUI SUITES ===")
     for t in ["gui_preview", "gui_silhouette", "gui_design", "gui_fast_flow", "gui_library", "gui_arrangement", "gui_arrangement_display", "gui_fit_map", "gui_avatar_field", "gui_viewport_sewing", "gui_core_workflow", "gui_editor_release", "gui_live_grab", "gui_matrix"]:
-        if not run_cmd([BLENDER_PATH, "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", t],
+        if not run_cmd([blender_path(), "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", t],
                        desc=f"In-Engine GUI: {t}"):
             return False
 
@@ -89,7 +76,7 @@ def do_build():
         
     zip_path = extension_archive()
     
-    if not run_cmd([BLENDER_PATH, "--background", "--factory-startup", "--command", "extension", "validate", str(zip_path)],
+    if not run_cmd([blender_path(), "--background", "--factory-startup", "--command", "extension", "validate", str(zip_path)],
                    desc="Validate extension package"):
         return False
         
@@ -101,7 +88,7 @@ def do_build():
     else:
         print(f"    (User extensions folder not found, skipping sync)")
 
-    if not run_cmd([BLENDER_PATH, "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_smoke.py"],
+    if not run_cmd([blender_path(), "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_smoke.py"],
                    desc="Real-Blender Full-Package & Zip Load Gate"):
         return False
         
@@ -112,7 +99,7 @@ def do_build():
 def do_arrangement_performance(label):
     report=SCRATCH / f"arrangement-performance-{label}.json"
     report.unlink(missing_ok=True)
-    if not run_cmd([BLENDER_PATH, "--factory-startup", "--window-geometry", "0", "0", "1500", "1000",
+    if not run_cmd([blender_path(), "--factory-startup", "--window-geometry", "0", "0", "1500", "1000",
                     "--python", "tests/gui_arrangement_performance.py", "--", label],
                    desc="Arrangement display orbit benchmark"):
         return False
@@ -125,7 +112,7 @@ def do_arrangement_performance(label):
 def do_action_performance(label):
     report = SCRATCH / f'action-performance-{label}.json'
     report.unlink(missing_ok=True)
-    if not run_cmd([BLENDER_PATH, '--factory-startup', '--window-geometry', '0', '0', '1500', '1000',
+    if not run_cmd([blender_path(), '--factory-startup', '--window-geometry', '0', '0', '1500', '1000',
                     '--python', 'tools/action_performance.py', '--', label],
                    desc='Action-time profiling matrix'):
         return False

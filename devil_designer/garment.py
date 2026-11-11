@@ -117,7 +117,7 @@ def restore_drape(scene,obj,panels):
 def reset(context):
     stop(context)
     from . import gpu_backend
-    gpu_backend._sessions.clear()
+    gpu_backend.clear()
     remove_objects(generated(context.scene,'simulation'))
     remove_objects(generated(context.scene,'anchor'))
     remove_objects(generated(context.scene,'collider'))
@@ -460,7 +460,11 @@ def build_simulation(context):
     obj['dd_piece_ids']=json.dumps([p.id for p in doc.patterns])
     tacks=add_anchors(context,obj,doc,anchor_indices)
     pin.extend(anchor_indices[anchor.id] for anchor in doc.anchors if anchor.id in anchor_indices and anchor.kind=='PIN')
-    xpbd.attach(context,obj,doc,panels,pieces,maps,plan,pin,tacks)
+    try:
+        xpbd.attach(context,obj,doc,panels,pieces,maps,plan,pin,tacks)
+    except Exception:
+        remove_objects([obj] + [item for item in generated(scene,'anchor') + generated(scene,'collider') if item not in old_anchors])
+        raise
     obj['dd_run_rest'] = json.dumps({panel['dd_pattern_id']:[tuple(item.vector) for item in panel.data.attributes['dd_rest'].data] for panel in panels},separators=(',',':'))
     restore_drape(scene,obj,panels)
     remove_objects(old_anchors)

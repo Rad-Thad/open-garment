@@ -92,6 +92,42 @@ pub fn grid_cloth(nx: usize, ny: usize, spacing: f32, compliance: f32) -> Cloth 
     }
 }
 
+pub fn merge(a: Cloth, b: Cloth) -> Cloth {
+    let offset = (a.positions.len() / 3) as u32;
+    let mut pairs = a.pairs;
+    pairs.extend(b.pairs.iter().map(|v| v + offset));
+    let mut triangles = a.triangles;
+    triangles.extend(b.triangles.iter().map(|v| v + offset));
+    let mut positions = a.positions;
+    positions.extend(b.positions);
+    let mut inverse_mass = a.inverse_mass;
+    inverse_mass.extend(b.inverse_mass);
+    let mut rest = a.rest;
+    rest.extend(b.rest);
+    let mut rest_start = a.rest_start;
+    rest_start.extend(b.rest_start);
+    let mut compliance = a.compliance;
+    compliance.extend(b.compliance);
+    let mut rest_positions = a.rest_positions;
+    rest_positions.extend(b.rest_positions);
+    let mut partner = a.partner;
+    partner.extend(b.partner.iter().map(|&p| if p >= 0 { p + offset as i32 } else { p }));
+    let mut contact_weight = a.contact_weight;
+    contact_weight.extend(b.contact_weight);
+    Cloth {
+        positions,
+        inverse_mass,
+        pairs,
+        rest,
+        rest_start,
+        compliance,
+        triangles,
+        rest_positions,
+        partner,
+        contact_weight,
+    }
+}
+
 pub fn uv_sphere(radius: f32, segments: usize, rings: usize) -> (Vec<f32>, Vec<u32>) {
     let mut vertices = Vec::new();
     for ring in 0..=rings {
@@ -111,8 +147,8 @@ pub fn uv_sphere(radius: f32, segments: usize, rings: usize) -> (Vec<f32>, Vec<u
             let b = (ring * stride + seg + 1) as u32;
             let c = ((ring + 1) * stride + seg) as u32;
             let d = ((ring + 1) * stride + seg + 1) as u32;
-            triangles.extend_from_slice(&[a, b, c]);
-            triangles.extend_from_slice(&[b, d, c]);
+            triangles.extend_from_slice(&[a, c, b]);
+            triangles.extend_from_slice(&[b, c, d]);
         }
     }
     (vertices, triangles)
@@ -195,7 +231,7 @@ pub fn closest_bary(p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32;
     let denom = 1.0 / (va + vb + vc);
     let v = vb * denom;
     let w = vc * denom;
-    [1.0 - v - w, v, w]
+    [v, w, 1.0 - v - w]
 }
 
 pub fn tri_point(bary: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {

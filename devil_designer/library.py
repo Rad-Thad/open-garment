@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 import bpy
 from mathutils import Matrix
-from .core import Document
+from .core import Document, map_grades
 from . import garment,live_panels
 
 
@@ -39,6 +39,7 @@ def scale_document(doc,factor,vertical=None):
                 v.x*=factor;v.y*=vertical
                 if v.incoming is not None:v.incoming=(v.incoming[0]*factor,v.incoming[1]*vertical)
                 if v.outgoing is not None:v.outgoing=(v.outgoing[0]*factor,v.outgoing[1]*vertical)
+                map_grades(v,lambda d:(d[0]*factor,d[1]*vertical))
         p.wrap_radius*=factor
         if getattr(p,'allowance',0.0): p.allowance*=max(factor,vertical)
         if getattr(p,'edge_allowances',None):

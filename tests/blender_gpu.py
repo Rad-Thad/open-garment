@@ -58,7 +58,8 @@ check(simulation.get('dd_solver') == 'GPU', 'simulation object is owned by the G
 check('DD XPBD' not in simulation.modifiers, 'GPU backend adds no Geometry Nodes modifier')
 run_frames(scene, 60)
 check(seam_gap(simulation) < .03, 'sewn seams close on the body')
-check(stretch(simulation) < 1.5, 'cloth stretch stays in range')
+run_frames(scene, 60)
+check(stretch(simulation) < 1.15, 'cloth stretch stays in range')
 coordinates = points(simulation)
 held_vertex = int(np.argmax(coordinates[:, 2]))
 held_start = coordinates[held_vertex].copy()
@@ -78,14 +79,8 @@ run_frames(scene, 10)
 check(float(points(simulation)[index][2]) - grab_z >= .05, 'grabbed cloth rises with the handle')
 grab.release()
 run_frames(scene, 30)
-result = None
-for _ in range(4):
-    try:
-        result = garment.keep_drape(bpy.context)
-        break
-    except ValueError:
-        run_frames(scene, 30)
-check(result is not None and result[1] <= 5, 'Keep welds the GPU drape')
+_, open_pairs = garment.keep_drape(bpy.context)
+check(open_pairs == 0, 'Keep welds every seam pair of the GPU drape')
 end = scene.frame_end
 garment.reset(bpy.context)
 check(scene.frame_end == end and scene.render.fps == 30, 'Reset restores the timeline')
@@ -104,10 +99,10 @@ raised = False
 try:
     garment.compile_garment(bpy.context)
 except ValueError as exc:
-    raised = 'GPU' in str(exc)
+    raised = str(exc) == 'Measured fabrics need the GPU solver. Choose Solver: GPU in Garment & View.'
 check(raised, 'measured fabric rejects the NODES solver')
 scene.dd_solver = 'GPU'
-scene.dd_pin_top = True
+scene.dd_self_collision = False
 
 volumes = {}
 for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
@@ -118,11 +113,20 @@ for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
     garment.reset(bpy.context)
     simulation = garment.compile_garment(bpy.context)
     check(simulation.get('dd_solver') == 'GPU', f'{name} compiles on the GPU backend')
-    run_frames(scene, 90)
+    start_pose = points(simulation).copy()
+    run_frames(scene, 60)
+    z60 = points(simulation)[:, 2].mean()
+    run_frames(scene, 30)
+    check(simulation['dd_steps'] == 90, 'every frame steps the solver once')
+    check(z60 - points(simulation)[:, 2].mean() < .05, 'draped garment stays on the body')
     coordinates = points(simulation)
     volumes[name] = float((coordinates.max(axis=0) - coordinates.min(axis=0)).prod())
 check(volumes['MeasuredStiff'] > volumes['MeasuredSoft'],
       f'stiffer measured fabric drapes larger ({volumes["MeasuredStiff"]:.5f} > {volumes["MeasuredSoft"]:.5f})')
+xpbd.hold(simulation, [0])
+run_frames(scene, 5)
+scene.frame_set(scene.frame_start)
+check(np.abs(points(simulation) - start_pose).max() < 1e-5, 'start frame restores the start pose after a pin')
 garment.reset(bpy.context)
 devil_designer.unregister()
 print('ALL GPU CHECKS PASSED', flush=True)

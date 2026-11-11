@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from devil_designer.core import Document, Session, area
+from devil_designer.core import Document, Session, area, clone_pattern
 from devil_designer import production, pattern_export
 
 
@@ -14,10 +14,10 @@ class SeamAllowanceTests(unittest.TestCase):
 
     def test_cut_outline_area(self):
         self.session.set_allowance(.01)
-        cut = production.cut_outline(self.session.document, self.pattern)
+        cut = production.cut_outline(self.pattern)
         self.assertAlmostEqual(area(cut), .0144, delta=1e-6)
         self.session.set_edge_allowance(self.session.document.edge(self.pattern.id, 0), 0.0)
-        cut = production.cut_outline(self.session.document, self.pattern)
+        cut = production.cut_outline(self.pattern)
         self.assertAlmostEqual(area(cut), .0132, delta=1e-6)
 
     def test_allowance_round_trip(self):
@@ -46,7 +46,7 @@ class GradingTests(unittest.TestCase):
         self.session.corner = 1
         self.session.set_grade('L', .01, 0.0)
         graded = self.session.document.graded('L')
-        self.assertAlmostEqual(area(graded.patterns[0].outline()), .0105, delta=1e-6)
+        self.assertAlmostEqual(abs(area(graded.patterns[0].outline())), .0105, delta=1e-6)
         self.assertEqual(self.session.document.graded('').dumps(), self.session.document.dumps())
 
     def test_grade_round_trip(self):
@@ -77,6 +77,49 @@ class GradingTests(unittest.TestCase):
         self.session.corner = 0
         self.session.set_grade('L', .01, 0.0)
         self.session.document.graded('L').validate_seams()
+
+
+class EditGradeTests(unittest.TestCase):
+    def setUp(self):
+        self.session = Session()
+        self.session.add([(0, 0), (.1, 0), (.1, .1), (0, .1)])
+        self.pattern = self.session.document.patterns[0]
+        self.session.add_size('L')
+        self.session.corner = 1
+        self.session.set_grade('L', .01, 0.0)
+        self.session.corner = None
+        self.session.selected = self.pattern.id
+
+    def test_flip_horizontal_keeps_grade(self):
+        self.session.flip_horizontal()
+        graded = self.session.document.graded('L')
+        self.assertAlmostEqual(abs(area(graded.patterns[0].outline())), .0105, delta=1e-6)
+
+    def test_rotate_keeps_grade(self):
+        self.session.rotate(90)
+        graded = self.session.document.graded('L')
+        self.assertAlmostEqual(abs(area(graded.patterns[0].outline())), .0105, delta=1e-6)
+
+    def test_clone_reflection_keeps_grade(self):
+        clone = clone_pattern(self.pattern, reflection=((0, 0), (0, 1)))
+        doc = Document()
+        doc.patterns = [clone]
+        doc.sizes = ['L']
+        graded = doc.graded('L')
+        self.assertAlmostEqual(abs(area(graded.patterns[0].outline())), .0105, delta=1e-6)
+
+    def test_split_edge_keeps_cut_area(self):
+        self.session.set_edge_allowance(self.session.document.edge(self.pattern.id, 0), .02)
+        before = area(production.cut_outline(self.pattern))
+        self.session.document.split_edge(self.session.document.edge(self.pattern.id, 0), .5)
+        after = area(production.cut_outline(self.pattern))
+        self.assertAlmostEqual(after, before, delta=1e-9)
+
+    def test_duplicate_keeps_cut_area(self):
+        self.session.duplicate()
+        source = self.session.document.patterns[0]
+        copy = self.session.document.patterns[-1]
+        self.assertAlmostEqual(area(production.cut_outline(copy)), area(production.cut_outline(source)), delta=1e-9)
 
 
 class MeasuredFabricTests(unittest.TestCase):
@@ -120,6 +163,7 @@ class ExportTests(unittest.TestCase):
             pattern_export.write_dxf(path, self.session.document, 'Style', '')
             text = path.read_text(encoding='ascii')
         self.assertEqual(text.count('\nBLOCK\n'), 1)
+        self.assertIn('POLYLINE\n8\n1\n66\n1\n70\n1\n', text)
         perimeters = _dxf_polyline_perimeters(text)
         self.assertTrue(any(abs(value - 480) < .5 for value in perimeters.get('1', [])), f'cut perimeter {perimeters.get("1")}')
         self.assertTrue(any(abs(value - 400) < .5 for value in perimeters.get('14', [])), f'stitch perimeter {perimeters.get("14")}')
@@ -135,6 +179,50 @@ class ExportTests(unittest.TestCase):
         self.assertTrue(text.startswith('%PDF-1.4'))
         self.assertEqual(text.count('/Type /Page '), 9)
         self.assertIn('/Helvetica', text)
+
+    def test_pdf_true_scale(self):
+        session = Session()
+        session.add([(0, 0), (.1, 0), (.1, .1), (0, .1)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pattern.pdf'
+            pattern_export.write_pdf(path, session.document, '', 'A4')
+            text = path.read_text(encoding='latin-1')
+        stream = text.split('stream\n', 1)[1].split('\nendstream', 1)[0]
+        tokens = stream.split()
+        index = tokens.index('m')
+        points = [(float(tokens[index - 2]), float(tokens[index - 1]))]
+        for position in range(index + 1, len(tokens)):
+            if tokens[position] == 'l':
+                points.append((float(tokens[position - 2]), float(tokens[position - 1])))
+            elif tokens[position] == 'h':
+                break
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        self.assertAlmostEqual(min(xs), 28.346, delta=0.01)
+        self.assertAlmostEqual(min(ys), 28.346, delta=0.01)
+        self.assertAlmostEqual(max(xs) - min(xs), 283.465, delta=0.01)
+        self.assertAlmostEqual(max(ys) - min(ys), 283.465, delta=0.01)
+
+    def test_export_accepts_string_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dxf = Path(directory) / 'pattern.dxf'
+            pdf = Path(directory) / 'pattern.pdf'
+            pattern_export.write_dxf(str(dxf), self.session.document, 'Style', '')
+            pattern_export.write_pdf(str(pdf), self.session.document, '', 'A4')
+            self.assertTrue(dxf.exists())
+            self.assertTrue(pdf.exists())
+
+    def test_export_non_ascii_name(self):
+        session = Session()
+        session.add([(0, 0), (.1, 0), (.1, .1), (0, .1)])
+        session.document.patterns[0].name = 'Ärmel'
+        with tempfile.TemporaryDirectory() as directory:
+            dxf = Path(directory) / 'pattern.dxf'
+            pdf = Path(directory) / 'pattern.pdf'
+            pattern_export.write_dxf(dxf, session.document, 'Style', '')
+            pattern_export.write_pdf(pdf, session.document, '', 'A4')
+            self.assertTrue(dxf.read_bytes())
+            self.assertTrue(pdf.read_bytes())
 
 
 def _dxf_entities(text):

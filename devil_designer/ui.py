@@ -29,7 +29,8 @@ PROPERTIES = ('dd_document','dd_history','dd_collection','dd_avatar','dd_spacing
               'dd_sew_a0','dd_sew_a1','dd_sew_b0','dd_sew_b1','dd_free_sewing','dd_sew_reverse','dd_internal_mode',
               'dd_lengths_visible','dd_measure_visible','dd_library_name','dd_library_dir','dd_library_selected','dd_library_refit','dd_fabric',
               'dd_fabric_structural','dd_fabric_bending','dd_fabric_density',
-              'dd_fabric_weft','dd_fabric_bias','dd_fabric_shrink_warp','dd_fabric_shrink_weft')
+              'dd_fabric_weft','dd_fabric_bias','dd_fabric_shrink_warp','dd_fabric_shrink_weft',
+              'dd_grade_x','dd_grade_y','dd_fabric_units','dd_fabric_weight','dd_fabric_stretch_warp','dd_fabric_stretch_weft','dd_fabric_stretch_bias','dd_fabric_bend_warp','dd_fabric_bend_weft','dd_fabric_bend_bias')
 
 
 def register():

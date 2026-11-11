@@ -243,13 +243,13 @@ class DD_OT_size_name(bpy.types.Operator):
         return {'FINISHED'}
 
 
-def _sized_path(base, size, extension):
+def _export_path(base, suffix, extension):
     stem = base
     for candidate in ('.dxf', '.pdf'):
         if stem.lower().endswith(candidate):
             stem = stem[:-len(candidate)]
             break
-    return stem + (f'-{size}' if size else '-Base') + extension
+    return stem + suffix + extension
 
 
 class DD_OT_export_patterns(bpy.types.Operator, ExportHelper):
@@ -262,6 +262,9 @@ class DD_OT_export_patterns(bpy.types.Operator, ExportHelper):
     format: bpy.props.EnumProperty(name='Format', items=[('DXF','DXF','DXF-AAMA'),('PDF','PDF','Tiled PDF')], default='DXF')
     paper: bpy.props.EnumProperty(name='Paper', items=[('A4','A4','A4'),('LETTER','Letter','Letter')], default='A4')
     all_sizes: bpy.props.BoolProperty(name='All sizes', default=False)
+    def check(self, context):
+        self.filename_ext = '.dxf' if self.format == 'DXF' else '.pdf'
+        return ExportHelper.check(self, context)
     def execute(self,context):
         from . import pattern_export
         from .core import Document
@@ -271,15 +274,19 @@ class DD_OT_export_patterns(bpy.types.Operator, ExportHelper):
             if not document.patterns:
                 raise ValueError('Draw at least one closed pattern first.')
             extension = '.dxf' if self.format == 'DXF' else '.pdf'
-            sizes = [scene.dd_size] if not self.all_sizes else [''] + list(document.sizes)
+            sizes = [scene.dd_size] if not self.all_sizes else [''] + [size for size in document.sizes if size != document.base_size]
             base = bpy.path.abspath(self.filepath)
             for size in sizes:
                 graded = document.graded(size)
-                path = base if len(sizes) == 1 else _sized_path(base, size, extension)
-                if self.format == 'DXF':
-                    pattern_export.write_dxf(path, graded, scene.name, size)
-                else:
-                    pattern_export.write_pdf(path, graded, size, self.paper)
+                suffix = '' if not self.all_sizes else '-' + (size or 'Base')
+                path = _export_path(base, suffix, extension)
+                try:
+                    if self.format == 'DXF':
+                        pattern_export.write_dxf(path, graded, scene.name, size)
+                    else:
+                        pattern_export.write_pdf(path, graded, size, self.paper)
+                except OSError as error:
+                    raise ValueError(f'Could not write {path}: {error.strerror or error}')
             return {'FINISHED'}
         return run(self,action)
 

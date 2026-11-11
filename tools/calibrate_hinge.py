@@ -2,6 +2,7 @@ import math
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scratch' / 'solver_site'))
 sys.path.insert(0, str(ROOT))
@@ -9,10 +10,9 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 import garment_solver
+from devil_designer.presets import HINGE_SCALE, MASS_SCALE
 
-MASS_SCALE = 1000.0
 GRAVITY = 9.81
-TAN_41_5 = math.tan(math.radians(41.5))
 WEIGHT_GSM = 150.0
 BEND_CM = (1.5, 2.5, 4.0)
 SPACINGS = (0.005, 0.0025)
@@ -21,7 +21,6 @@ PLATFORM = 0.03
 SETTLE_FRAMES = 150
 SUBSTEPS = 4
 ITERATIONS = 8
-HINGE_SCALE = 3.0
 
 
 def flexural_rigidity(bend_cm):
@@ -106,20 +105,6 @@ def build_hinges(positions, triangles, rigidity):
     return hinges, np.array(rest, dtype=np.float32), compliance
 
 
-def clamp_plane_collider(overhang):
-    reach = overhang * 2.0
-    width = STRIP_WIDTH * 3.0
-    drop = reach * TAN_41_5
-    positions = np.array([
-        (0.0, -width, 0.0),
-        (reach, -width, -drop),
-        (0.0, width, 0.0),
-        (reach, width, -drop),
-    ], dtype=np.float32)
-    triangles = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
-    return positions, triangles
-
-
 def run_cantilever(spacing, bend_cm, overhang):
     rigidity = flexural_rigidity(bend_cm)
     positions, triangles, nx, ny = build_strip(spacing, overhang)
@@ -167,8 +152,6 @@ def run_cantilever(spacing, bend_cm, overhang):
         hinge_rest,
         hinge_compliance,
     )
-    plane_pos, plane_tri = clamp_plane_collider(overhang)
-    solver.set_collider(plane_pos, plane_tri)
     mask = np.zeros(n, dtype=np.uint8)
     mask[np.where(positions[:, 0] <= 0.0)[0]] = 1
     solver.set_pins(mask, positions.ravel())
@@ -190,7 +173,7 @@ def chord_angle(result, nx, ny):
 def find_overhang(spacing, bend_cm):
     target = 2.0 * bend_cm / 100.0
     low = target * 0.5
-    high = target * 1.0
+    high = target * 2.0
     for _ in range(14):
         mid = 0.5 * (low + high)
         result, nx, ny = run_cantilever(spacing, bend_cm, mid)

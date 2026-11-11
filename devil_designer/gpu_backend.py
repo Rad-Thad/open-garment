@@ -1,18 +1,17 @@
-from collections import defaultdict
-
+import bpy
 import math
 
-import bpy
 import numpy as np
+
+from .presets import HINGE_SCALE, MASS_SCALE
 
 BODY_BAND = .03
 WELD_GAIN = .25
 SEAM_SECONDS = .8
 DAMPING = 1.0
-ITERATIONS = 2
+ITERATIONS = 8
 LIVE_VERTEX_BUDGET = 600000
 INPUT_PREFIX = 'dd_in:'
-HINGE_SCALE = 3.0
 
 _sessions = {}
 _last_frames = {}
@@ -53,10 +52,15 @@ def prepare(obj):
     except RuntimeError as error:
         raise ValueError('GPU solver unavailable: ' + str(error) + ' Choose Solver: Nodes in Garment & View.')
     obj['dd_solver'] = 'GPU'
+    invalidate(obj)
 
 
 def invalidate(obj):
     _sessions.pop(obj.name, None)
+
+
+def iterations(spacing):
+    return min(32, max(ITERATIONS, math.ceil(ITERATIONS * (.025 / spacing) ** 2)))
 
 
 def _vertex_attr(mesh, name, dtype=np.float32, vector=False):
@@ -73,35 +77,6 @@ def _vertex_attr(mesh, name, dtype=np.float32, vector=False):
 def _write_positions(obj, positions):
     obj.data.vertices.foreach_set('co', np.ascontiguousarray(positions).ravel())
     obj.data.update()
-
-
-def _hinge_dihedral(a, b, c, d, rest):
-    e = rest[b] - rest[a]
-    elen = np.linalg.norm(e)
-    n1 = np.cross(e, rest[c] - rest[a])
-    n2 = np.cross(e, rest[d] - rest[a])
-    n1n = n1 / np.linalg.norm(n1)
-    n2n = n2 / np.linalg.norm(n2)
-    s = np.dot(e, np.cross(n1n, n2n)) / elen
-    return float(math.atan2(-s, -float(np.dot(n1n, n2n))))
-
-
-def _hinge_compliance(a, b, c, d, rest_position, flex_warp, flex_weft, flex_bias):
-    from . import xpbd
-    e = rest_position[b] - rest_position[a]
-    elen = float(np.linalg.norm(e))
-    ex = float(e[0])
-    ey = float(e[1])
-    denom = ex * ex + ey * ey
-    a_ratio = ex * ex / denom
-    l_ratio = ey * ey / denom
-    bw = float((flex_warp[a] + flex_warp[b] + flex_warp[c] + flex_warp[d]) * 0.25)
-    bf = float((flex_weft[a] + flex_weft[b] + flex_weft[c] + flex_weft[d]) * 0.25)
-    bb = float((flex_bias[a] + flex_bias[b] + flex_bias[c] + flex_bias[d]) * 0.25)
-    b_dir = max(bw * a_ratio * a_ratio + bf * l_ratio * l_ratio + (4 * bb - bw - bf) * a_ratio * l_ratio, 1e-3 * bw)
-    h1 = float(np.linalg.norm(np.cross(e, rest_position[c] - rest_position[a]))) / elen
-    h2 = float(np.linalg.norm(np.cross(e, rest_position[d] - rest_position[a]))) / elen
-    return 1.0 / (HINGE_SCALE * b_dir * elen / (h1 + h2) * xpbd.MASS_SCALE)
 
 
 def session(scene, obj):
@@ -141,38 +116,55 @@ def session(scene, obj):
     flex_weft = _vertex_attr(mesh, 'dd_flex_weft')
     flex_bias = _vertex_attr(mesh, 'dd_flex_bias')
 
-    edge_tris = defaultdict(list)
-    for tri_index, tri in enumerate(triangles):
-        for k in range(3):
-            a = int(tri[k])
-            b = int(tri[(k + 1) % 3])
-            edge_tris[(min(a, b), max(a, b))].append(tri_index)
-    bend_pairs = []
-    bend_rests = []
-    bend_comps = []
-    hinges = []
-    hinge_rests = []
-    hinge_comps = []
-    for (a, b), tris in edge_tris.items():
-        if len(tris) != 2:
-            continue
-        first = triangles[tris[0]]
-        second = triangles[tris[1]]
-        c = next(int(v) for v in first if v != a and v != b)
-        d = next(int(v) for v in second if v != a and v != b)
-        if flex_warp[a] > 0 and flex_warp[b] > 0 and flex_warp[c] > 0 and flex_warp[d] > 0:
-            hinges.append((a, b, c, d))
-            hinge_rests.append(_hinge_dihedral(a, b, c, d, bend_rest))
-            hinge_comps.append(_hinge_compliance(a, b, c, d, rest_position, flex_warp, flex_weft, flex_bias))
-        else:
-            bend_pairs.append((c, d))
-            bend_rests.append(float(np.linalg.norm(bend_rest[c] - bend_rest[d])))
-            bend_comps.append(float((bend_compliance[c] + bend_compliance[d]) * 0.5))
+    half = np.stack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]), axis=1).reshape(-1, 2)
+    opposite = triangles[:, [2, 0, 1]].reshape(-1)
+    low, high = half.min(1), half.max(1)
+    key = low.astype(np.int64) * count + high
+    order = np.argsort(key, kind='stable')
+    sorted_key = key[order]
+    starts = np.nonzero(np.r_[True, sorted_key[1:] != sorted_key[:-1]])[0]
+    ends = np.r_[starts[1:], len(sorted_key)]
+    interior = starts[ends - starts == 2]
+    a = low[order[interior]]
+    b = high[order[interior]]
+    c = opposite[order[interior]]
+    d = opposite[order[interior + 1]]
+    is_hinge = (flex_warp[a] > 0) & (flex_warp[b] > 0) & (flex_warp[c] > 0) & (flex_warp[d] > 0)
+    hinges = np.stack((a[is_hinge], b[is_hinge], c[is_hinge], d[is_hinge]), axis=1)
+    bend_pairs = np.stack((c[~is_hinge], d[~is_hinge]), axis=1)
+    bend_rests = np.linalg.norm(bend_rest[c[~is_hinge]] - bend_rest[d[~is_hinge]], axis=1)
+    bend_comps = (bend_compliance[c[~is_hinge]] + bend_compliance[d[~is_hinge]]) * 0.5
+    ha = a[is_hinge]
+    hb = b[is_hinge]
+    hc = c[is_hinge]
+    hd = d[is_hinge]
+    he = bend_rest[hb] - bend_rest[ha]
+    helen = np.linalg.norm(he, axis=1)
+    hn1 = np.cross(he, bend_rest[hc] - bend_rest[ha])
+    hn2 = np.cross(he, bend_rest[hd] - bend_rest[ha])
+    hn1n = hn1 / np.linalg.norm(hn1, axis=1)[:, None]
+    hn2n = hn2 / np.linalg.norm(hn2, axis=1)[:, None]
+    hs = np.einsum('ij,ij->i', he, np.cross(hn1n, hn2n)) / helen
+    hinge_rests = np.arctan2(-hs, -np.einsum('ij,ij->i', hn1n, hn2n))
+    pe = rest_position[hb] - rest_position[ha]
+    pelen = np.linalg.norm(pe, axis=1)
+    pex = pe[:, 0]
+    pey = pe[:, 1]
+    pdenom = pex * pex + pey * pey
+    a_ratio = pex * pex / pdenom
+    l_ratio = pey * pey / pdenom
+    bw = (flex_warp[ha] + flex_warp[hb] + flex_warp[hc] + flex_warp[hd]) * 0.25
+    bf = (flex_weft[ha] + flex_weft[hb] + flex_weft[hc] + flex_weft[hd]) * 0.25
+    bb = (flex_bias[ha] + flex_bias[hb] + flex_bias[hc] + flex_bias[hd]) * 0.25
+    b_dir = np.maximum(bw * a_ratio * a_ratio + bf * l_ratio * l_ratio + (4 * bb - bw - bf) * a_ratio * l_ratio, 1e-3 * bw)
+    ph1 = np.linalg.norm(np.cross(pe, rest_position[hc] - rest_position[ha]), axis=1) / pelen
+    ph2 = np.linalg.norm(np.cross(pe, rest_position[hd] - rest_position[ha]), axis=1) / pelen
+    hinge_comps = 1.0 / (HINGE_SCALE * b_dir * pelen / (ph1 + ph2) * MASS_SCALE)
 
-    pairs = np.concatenate((edges, np.array(bend_pairs, dtype=np.int32))) if bend_pairs else edges
-    rest = np.concatenate((rest_length, np.array(bend_rests, dtype=np.float32)))
-    rest_start = np.concatenate((np.where(seam, seam_start, rest_length).astype(np.float32), np.array(bend_rests, dtype=np.float32)))
-    compliance = np.concatenate((edge_compliance, np.array(bend_comps, dtype=np.float32)))
+    pairs = np.concatenate((edges, bend_pairs.astype(np.int32))) if len(bend_pairs) else edges
+    rest = np.concatenate((rest_length, bend_rests.astype(np.float32)))
+    rest_start = np.concatenate((np.where(seam, seam_start, rest_length).astype(np.float32), bend_rests.astype(np.float32)))
+    compliance = np.concatenate((edge_compliance, bend_comps.astype(np.float32)))
     inverse_mass = (1.0 / np.maximum(mass, 1e-9)).astype(np.float32)
 
     body = Slot(obj, 'Body').value
@@ -224,9 +216,9 @@ def session(scene, obj):
         partner,
         contact_weight,
         params,
-        np.array(hinges, dtype=np.uint32).ravel() if hinges else None,
-        np.array(hinge_rests, dtype=np.float32) if hinges else None,
-        np.array(hinge_comps, dtype=np.float32) if hinges else None,
+        hinges.astype(np.uint32).ravel() if len(hinges) else None,
+        hinge_rests.astype(np.float32) if len(hinges) else None,
+        hinge_comps.astype(np.float32) if len(hinges) else None,
     )
     if collider_triangles.size:
         solver.set_collider(collider_positions, collider_triangles.astype(np.uint32).ravel())
@@ -235,14 +227,12 @@ def session(scene, obj):
         'count': count,
         'signature': obj.get('dd_signature'),
         'solver': solver,
-        'initial': positions.copy(),
         'current': positions.copy(),
         'rest': rest_position,
         'pinned': pinned,
         'tacked': tacked,
         'pin_target': pin_target,
         'tack_target': tack_target,
-        'stepped': False,
     }
     _sessions[obj.name] = cached
     return cached
@@ -251,18 +241,20 @@ def session(scene, obj):
 @bpy.app.handlers.persistent
 def advance(scene):
     from . import garment, xpbd
+    last = _last_frames.get(scene.name)
+    _last_frames[scene.name] = scene.frame_current
+    at_start = scene.frame_current <= scene.frame_start
+    if not at_start and last is not None and scene.frame_current <= last:
+        return
     for obj in garment.generated(scene, 'simulation'):
         if not owns(obj) or not obj.visible_get():
             continue
-        if scene.frame_current <= scene.frame_start:
-            cached = _sessions.get(obj.name)
-            if cached is not None and cached['stepped']:
-                _write_positions(obj, cached['initial'])
+        if at_start:
+            if obj.get('dd_steps'):
                 _sessions.pop(obj.name, None)
+                _write_positions(obj, _vertex_attr(obj.data, 'dd_start_position', vector=True))
+                obj['dd_steps'] = 0
             continue
-        if _last_frames.get(scene.name) == scene.frame_current:
-            continue
-        _last_frames[scene.name] = scene.frame_current
         cached = session(scene, obj)
         solver = cached['solver']
         elapsed = (scene.frame_current - 1 - scene.frame_start) / xpbd.SIM_FPS
@@ -295,7 +287,12 @@ def advance(scene):
         solver.set_params({'elapsed': elapsed})
         substeps = int(Slot(obj, 'Inner Substeps').value)
         iterations = int(Slot(obj, 'Iterations').value)
-        solver.step(substeps, iterations)
+        try:
+            solver.step(substeps, iterations)
+        except Exception:
+            _sessions.pop(obj.name, None)
+            scene['dd_last_error'] = 'GPU solver device lost; reinitialising.'
+            continue
         positions = np.frombuffer(solver.positions(), dtype=np.float32).reshape(-1, 3)
         if not np.isfinite(positions).all():
             _sessions.pop(obj.name, None)
@@ -303,25 +300,26 @@ def advance(scene):
             continue
         _write_positions(obj, positions)
         cached['current'] = positions
-        cached['stepped'] = True
+        obj['dd_steps'] = obj.get('dd_steps', 0) + 1
 
 
 def register():
     bpy.app.handlers.frame_change_pre.append(advance)
-    bpy.app.handlers.load_post.append(_clear)
-    bpy.app.handlers.undo_post.append(_clear)
+    bpy.app.handlers.load_post.append(clear)
+    bpy.app.handlers.undo_post.append(clear)
 
 
 def unregister():
     if advance in bpy.app.handlers.frame_change_pre:
         bpy.app.handlers.frame_change_pre.remove(advance)
-    if _clear in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.remove(_clear)
-    if _clear in bpy.app.handlers.undo_post:
-        bpy.app.handlers.undo_post.remove(_clear)
+    if clear in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(clear)
+    if clear in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.remove(clear)
     _sessions.clear()
 
 
-def _clear(*args):
+@bpy.app.handlers.persistent
+def clear(*args):
     _sessions.clear()
     _last_frames.clear()

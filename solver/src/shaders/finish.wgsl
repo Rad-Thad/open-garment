@@ -47,17 +47,26 @@ struct ContactOut {
 @group(0) @binding(1) var<storage, read> contact_out: array<ContactOut>;
 @group(0) @binding(2) var<uniform> params: Params;
 
+const BODY_STATIC: f32 = 0.5;
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= params.n) { return; }
-  let p = state[i];
+  var p = state[i];
   if (p.w == 0.0) { return; }
   var v = (p.xyz - state[params.n + i].xyz) / params.h;
   let c = contact_out[i];
   if (c.touching != 0u) {
     let vn = dot(v, c.normal);
-    v = (v - c.normal * vn) * (1.0 - params.body_grip) + c.normal * max(vn, 0.0);
+    let tangent = v - c.normal * vn;
+    if (params.gravity_ramp >= 1.0 && length(tangent) * params.h <= BODY_STATIC * max(dot(c.delta, c.normal), 0.0)) {
+      p = vec4<f32>(p.xyz - tangent * params.h, p.w);
+      v = c.normal * max(vn, 0.0);
+    } else {
+      v = tangent * (1.0 - params.body_grip) + c.normal * max(vn, 0.0);
+    }
   }
+  state[i] = p;
   state[params.n + i] = vec4<f32>(p.xyz - v * params.h, 0.0);
 }

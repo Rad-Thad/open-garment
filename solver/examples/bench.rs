@@ -79,8 +79,8 @@ fn uv_sphere(radius: f32, segments: usize, rings: usize) -> (Vec<f32>, Vec<u32>)
             let b = (ring * stride + seg + 1) as u32;
             let c = ((ring + 1) * stride + seg) as u32;
             let d = ((ring + 1) * stride + seg + 1) as u32;
-            triangles.extend_from_slice(&[a, b, c]);
-            triangles.extend_from_slice(&[b, d, c]);
+            triangles.extend_from_slice(&[a, c, b]);
+            triangles.extend_from_slice(&[b, c, d]);
         }
     }
     (vertices, triangles)
@@ -95,7 +95,7 @@ fn main() {
     for p in positions.chunks_exact_mut(3) {
         p[0] -= center;
         p[1] -= center;
-        p[2] = 0.6;
+        p[2] = 0.31;
     }
     let (sphere_verts, sphere_tris) = uv_sphere(0.3, 40, 24);
     let mut params = SolverParams::default();
@@ -125,7 +125,10 @@ fn main() {
     solver.set_collider(&sphere_verts, &sphere_tris);
     let mut total = 0.0f64;
     let frames = 120u32;
-    for _ in 0..frames {
+    for frame in 0..frames {
+        let mut p = *solver.params();
+        p.elapsed = frame as f32 * params.frame_time;
+        solver.set_params(p);
         let t0 = Instant::now();
         solver.step(12, 2).unwrap();
         total += t0.elapsed().as_secs_f64();
