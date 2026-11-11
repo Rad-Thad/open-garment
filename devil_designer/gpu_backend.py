@@ -252,7 +252,8 @@ def advance(scene):
         if at_start:
             if obj.get('dd_steps'):
                 _sessions.pop(obj.name, None)
-                _write_positions(obj, _vertex_attr(obj.data, 'dd_start_position', vector=True))
+                if 'dd_start_position' in obj.data.attributes:
+                    _write_positions(obj, _vertex_attr(obj.data, 'dd_start_position', vector=True))
                 obj['dd_steps'] = 0
             continue
         cached = session(scene, obj)
