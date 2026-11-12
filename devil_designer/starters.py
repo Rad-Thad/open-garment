@@ -243,7 +243,7 @@ def create_hoodie_starter(measurements, fabric='COTTON'):
     right, left = hoods
     session.sew_chains(right_neck, [make_edge(document, right, 0)], reverse=True)
     session.sew_chains(left_neck, [make_edge(document, left, 0)], reverse=True)
-    session.sew_chains([make_edge(document, right, 3)], [make_edge(document, left, 1)], reverse=True)
+    session.sew_chains([make_edge(document, right, 1)], [make_edge(document, left, 3)], reverse=True)
     session.sew_chains([make_edge(document, right, 2)], [make_edge(document, left, 2)], reverse=True)
     return document
 
