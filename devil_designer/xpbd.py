@@ -590,6 +590,9 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
         set_input(obj, 'Grab Radius', .05)
         set_input(obj, 'Iterations', gpu_backend.iterations(scene.dd_spacing))
         set_input(obj, 'Seam Seconds', gpu_backend.SEAM_SECONDS)
-        set_input(obj, 'Damping', gpu_backend.DAMPING)
+        set_input(obj, 'Grab Release', -1.0)
+        set_input(obj, 'Brush Start', (0.0, 0.0, 0.0))
+        set_input(obj, 'Brush End', (0.0, 0.0, 0.0))
+        set_input(obj, 'Brush Shape', (.05, 0.0, 0.0))
     obj.update_tag()
     return mod

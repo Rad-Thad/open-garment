@@ -91,12 +91,48 @@ handle.location.z += 0.1
 run_frames(scene, 10)
 check(float(points(simulation)[index][2]) - grab_z >= .05, 'grabbed cloth rises with the handle')
 grab.release(bpy.context)
+held_z = float(points(simulation)[index][2])
 run_frames(scene, 30)
+check(held_z - float(points(simulation)[index][2]) >= .02, 'released cloth falls back without the handle')
 _, open_pairs = garment.keep_drape(bpy.context)
 check(open_pairs == 0, 'Keep welds every seam pair of the GPU drape')
 end = scene.frame_end
 garment.reset(bpy.context)
 check(scene.frame_end == end and scene.render.fps == 30, 'Reset restores the timeline')
+simulation = garment.compile_garment(bpy.context)
+run_frames(scene, 60)
+grab = xpbd_live.ClothGrab(simulation)
+index = int(non_seam[np.argmin(points(simulation)[non_seam, 2])])
+lifted = points(simulation).copy()
+lifted[index, 2] += .03
+check(xpbd_live.pin_cloth(simulation, [index], lifted) == 1, 'live pin accepts a free vertex')
+run_frames(scene, 10)
+check(math.dist(points(simulation)[index], lifted[index]) < 1e-4, 'live pin holds the cloth without a new drape')
+check(xpbd_live.unpin_cloth(simulation, [index]) == 1, 'live unpin frees the vertex')
+run_frames(scene, 30)
+check(float(lifted[index][2]) - float(points(simulation)[index][2]) >= .01, 'unpinned cloth leaves the pin position')
+for mode in (xpbd_live.FOLD, xpbd_live.SWEEP):
+    grab.mode = mode
+    before = points(simulation).copy()
+    start = before[index].copy()
+    end = start + np.array((.06, 0, 0), dtype=np.float32)
+    stroke = end - start
+    along = np.clip((before - start) @ stroke / float(stroke @ stroke), 0, 1)
+    nearest = start + along[:, None] * stroke
+    near = np.linalg.norm(before - nearest, axis=1) < .04
+    grab.begin_stroke(bpy.context, index, Vector(start.tolist()))
+    grab.write_stroke(bpy.context, Vector(end.tolist()), .5)
+    run_frames(scene, 10)
+    after = points(simulation)
+    if mode == xpbd_live.FOLD:
+        moved = (np.linalg.norm(before[near] - nearest[near], axis=1) - np.linalg.norm(after[near] - nearest[near], axis=1)).mean()
+    else:
+        moved = ((after[near] - before[near]) @ (stroke / np.linalg.norm(stroke))).mean()
+    check(near.sum() >= 4 and moved > .003, f'{mode.title()} brush moves the cloth under it on the GPU solver ({moved:.4f} m)')
+    grab.end_stroke(bpy.context)
+    check(tuple(xpbd.input_slot(simulation, 'Brush Shape').value)[1] == 0.0, f'{mode.title()} release switches the GPU brush off')
+    run_frames(scene, 20)
+garment.reset(bpy.context)
 
 soft = dict(weight_gsm=150, stretch_warp=100, stretch_weft=90, stretch_bias=80, bend_warp=1.5, bend_weft=1.5, bend_bias=1.5)
 stiff = dict(weight_gsm=150, stretch_warp=100, stretch_weft=90, stretch_bias=80, bend_warp=4.0, bend_weft=4.0, bend_bias=4.0)

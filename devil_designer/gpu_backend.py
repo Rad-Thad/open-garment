@@ -8,7 +8,6 @@ from .presets import HINGE_SCALE, MASS_SCALE
 BODY_BAND = .03
 WELD_GAIN = .25
 SEAM_SECONDS = .8
-DAMPING = 1.0
 ITERATIONS = 8
 LIVE_VERTEX_BUDGET = 600000
 INPUT_PREFIX = 'dd_in:'
@@ -104,9 +103,7 @@ def session(scene, obj):
     mass = _vertex_attr(mesh, 'mass')
     contact_weight = _vertex_attr(mesh, 'dd_contact_weight')
     partner = _vertex_attr(mesh, 'dd_partner', np.int32)
-    pinned = _vertex_attr(mesh, 'dd_pinned', bool)
     tacked = _vertex_attr(mesh, 'dd_tacked', bool)
-    pin_target = _vertex_attr(mesh, 'dd_pin_target', vector=True)
     tack_vertices = _vertex_attr(mesh, 'dd_tack_vertices', vector=True)
     tack_weights = _vertex_attr(mesh, 'dd_tack_weights', vector=True)
     rest_position = _vertex_attr(mesh, 'dd_rest_position', vector=True)
@@ -193,7 +190,7 @@ def session(scene, obj):
         'gravity_x': gravity[0],
         'gravity_y': gravity[1],
         'gravity_z': gravity[2],
-        'damping': float(Slot(obj, 'Damping').value),
+        'damping': float(_vertex_attr(mesh, 'dd_damping').mean()),
         'body_margin': scene.dd_skin_offset / unit,
         'body_grip': scene.dd_friction,
         'body_step': xpbd.BODY_STEP / unit,
@@ -229,9 +226,7 @@ def session(scene, obj):
         'solver': solver,
         'current': positions.copy(),
         'rest': rest_position,
-        'pinned': pinned,
         'tacked': tacked,
-        'pin_target': pin_target,
         'tack_target': tack_target,
     }
     _sessions[obj.name] = cached
@@ -260,17 +255,35 @@ def advance(scene):
         solver = cached['solver']
         elapsed = (scene.frame_current - 1 - scene.frame_start) / xpbd.SIM_FPS
         ramp = min(max(elapsed / SEAM_SECONDS, 0.0), 1.0)
-        targets = cached['pin_target'].copy()
+        pin_target = _vertex_attr(obj.data, 'dd_pin_target', vector=True)
+        pinned = _vertex_attr(obj.data, 'dd_pinned', bool)
+        targets = pin_target.copy()
         tacked = cached['tacked']
-        targets[tacked] = cached['pin_target'][tacked] * (1.0 - ramp) + cached['tack_target'][tacked] * ramp
-        mask = cached['pinned'].copy()
+        targets[tacked] = pin_target[tacked] * (1.0 - ramp) + cached['tack_target'][tacked] * ramp
+        mask = pinned.copy()
+        current = cached['current']
+        shape = Slot(obj, 'Brush Shape').value
+        if shape is not None and shape[1] > 0.0:
+            start = np.array(Slot(obj, 'Brush Start').value, dtype=np.float32)
+            end = np.array(Slot(obj, 'Brush End').value, dtype=np.float32)
+            stroke = end - start
+            along = np.clip((current - start) @ stroke / max(float(stroke @ stroke), 1e-9), 0.0, 1.0)
+            nearest = start + along[:, None] * stroke
+            cover = np.maximum(1.0 - np.linalg.norm(current - nearest, axis=1) / max(float(shape[0]), .001), 0.0)
+            blend = cover * cover * (3.0 - 2.0 * cover)
+            toward = nearest - current
+            axis = stroke / max(float(np.linalg.norm(stroke)), 1e-12)
+            gather = end - nearest if shape[2] > .5 else toward - np.outer(toward @ axis, axis)
+            brushed = ~pinned & (blend > 0.0)
+            targets[brushed] = current[brushed] + gather[brushed] * (blend[brushed] * float(shape[1]))[:, None]
+            mask[brushed] = True
         grab_index = int(Slot(obj, 'Grab Index').value)
-        if grab_index >= 0:
+        release = Slot(obj, 'Grab Release').value
+        if grab_index >= 0 and (release is None or release < 0.0):
             handle = Slot(obj, 'Grab Handle').value
             radius = max(float(Slot(obj, 'Grab Radius').value), 0.001)
             stride = float(Slot(obj, 'Grab Stride').value)
             reach = max(float(Slot(obj, 'Grab Reach').value), 0.001)
-            current = cached['current']
             rest = cached['rest']
             handle_position = np.array(handle.location, dtype=np.float32)
             grabbed = current[grab_index]
