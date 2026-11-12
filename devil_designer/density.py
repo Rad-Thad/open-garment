@@ -1,6 +1,8 @@
 import copy
 import math
+from .core import area
 from .meshing import SamplingPlan,edge_counts
+AUTO_VERTEX_BUDGET=6000
 
 
 def effective_spacing(pattern,default_spacing):
@@ -9,7 +11,11 @@ def effective_spacing(pattern,default_spacing):
     if pattern.mesh_density not in ('AUTO','COARSE','STANDARD','FINE','ULTRA'):
         raise ValueError('Unknown mesh density.')
     multiplier={'AUTO':1.0,'COARSE':2.0,'STANDARD':1.0,'FINE':.5,'ULTRA':.25}[pattern.mesh_density]
-    return max(.003,min(.2,default_spacing*multiplier))
+    spacing=max(.003,min(.2,default_spacing*multiplier))
+    if pattern.mesh_density=='AUTO':
+        estimate=abs(area(pattern.outline()))/(spacing*spacing*math.sqrt(3)/2)
+        if estimate>AUTO_VERTEX_BUDGET:spacing=min(.2,spacing*math.sqrt(estimate/AUTO_VERTEX_BUDGET))
+    return spacing
 
 
 def boundary_plan(document,default_spacing):

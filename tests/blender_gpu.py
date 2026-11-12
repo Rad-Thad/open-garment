@@ -53,6 +53,19 @@ scene.dd_spacing = .025
 scene.render.fps = 30
 scene.frame_set(scene.frame_start)
 check('FINISHED' in bpy.ops.devil_designer.demo(), 'demo garment created')
+for spacing, frames in ((.04, 30), (.02, 120), (.01, 120), (.005, 30)):
+    scene.dd_spacing = spacing
+    scene.pop('dd_last_error', None)
+    simulation = garment.compile_garment(bpy.context)
+    start_pose = points(simulation).copy()
+    run_frames(scene, frames)
+    check(simulation.get('dd_steps') == frames and not scene.get('dd_last_error'), f'spacing {spacing} steps the GPU solver on every frame')
+    check(np.abs(points(simulation) - start_pose).max() > .001, f'spacing {spacing} moves the cloth')
+    if frames == 120:
+        check(stretch(simulation) < 1.15, f'spacing {spacing} cloth stretch stays in range')
+        check(seam_gap(simulation) < .03, f'spacing {spacing} sewn seams close on the body')
+    garment.reset(bpy.context)
+scene.dd_spacing = .025
 simulation = garment.compile_garment(bpy.context)
 check(simulation.get('dd_solver') == 'GPU', 'simulation object is owned by the GPU backend')
 check('DD XPBD' not in simulation.modifiers, 'GPU backend adds no Geometry Nodes modifier')

@@ -93,12 +93,23 @@ def fabric_mesh(document,pattern,spacing,counts):
     miny,maxy=min(p[1] for p in points),max(p[1] for p in points)
     rows=math.ceil((maxy-miny)/(spacing*math.sqrt(3)/2));cols=math.ceil((maxx-minx)/spacing)
     if rows*cols+len(verts)>MAX_VERTICES:raise ValueError('Pattern exceeds 50,000 candidate points. Increase mesh spacing.')
+    import numpy as np
     constraint_points=[(verts[a],verts[b]) for a,b in constraints]
-    for row in range(1,rows):
-        y=miny+row*spacing*math.sqrt(3)/2
-        for col in range(cols+1):
-            p=(minx+(col+.5*(row%2))*spacing,y)
-            if on_fabric(p) and min(distance_to_segment(p,a,b) for a,b in constraint_points)>spacing*.28:verts.append(p)
+    starts=np.array([a for a,_ in constraint_points],dtype=np.float64)
+    spans=np.array([b for _,b in constraint_points],dtype=np.float64)-starts
+    lengths=np.maximum(1e-20,(spans*spans).sum(axis=1))
+    limit=spacing*.28
+    candidates=[(minx+(col+.5*(row%2))*spacing,miny+row*spacing*math.sqrt(3)/2) for row in range(1,rows) for col in range(cols+1)]
+    block=max(1,2000000//len(constraint_points))
+    for first in range(0,len(candidates),block):
+        chunk=candidates[first:first+block]
+        offsets=np.array(chunk,dtype=np.float64)[:,None,:]-starts[None,:,:]
+        along=np.clip((offsets*spans[None,:,:]).sum(axis=2)/lengths[None,:],0,1)
+        nearest=np.hypot(offsets[:,:,0]-along*spans[None,:,0],offsets[:,:,1]-along*spans[None,:,1]).min(axis=1)
+        for p,distance in zip(chunk,nearest.tolist()):
+            if distance<=limit-1e-9:continue
+            if distance<limit+1e-9 and not min(distance_to_segment(p,a,b) for a,b in constraint_points)>limit:continue
+            if on_fabric(p):verts.append(p)
     if area([verts[i] for i in outer])<0:outer.reverse()
     out,_,faces,origins,_,_=delaunay_2d_cdt([Vector(v) for v in verts],list(constraints),[outer],1,1e-7,True)
     coords=[(float(v.x),float(v.y)) for v in out]

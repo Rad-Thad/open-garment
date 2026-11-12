@@ -1,7 +1,8 @@
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from tools.dev import do_action_performance, run_cmd
+from tools.dev import SCRATCH, do_action_performance, run_cmd
 
 
 class DeveloperRunnerTests(unittest.TestCase):
@@ -26,6 +27,13 @@ class DeveloperRunnerTests(unittest.TestCase):
         with patch('tools.dev.subprocess.run', return_value=result) as command, patch('builtins.print'):
             self.assertTrue(run_cmd(['python', 'tools/build.py']))
         self.assertEqual(command.call_args.kwargs['env']['PYTHONDONTWRITEBYTECODE'], '1')
+
+    def test_child_processes_use_scratch_temporary_directory(self):
+        result = SimpleNamespace(returncode=0, stdout='', stderr='')
+        with patch('tools.dev.subprocess.run', return_value=result) as command, patch('builtins.print'):
+            self.assertTrue(run_cmd(['python', 'tools/build.py']))
+        environment = command.call_args.kwargs['env']
+        self.assertEqual({environment[name] for name in ('TMPDIR', 'TEMP', 'TMP')}, {str(SCRATCH / 'tmp') + os.sep})
 
     def test_blender_gui_timeout_is_not_a_successful_test(self):
         result = SimpleNamespace(returncode=0, stdout='GUI TEST TIMED OUT waiting for report', stderr='')

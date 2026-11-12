@@ -12,6 +12,9 @@ sys.path.insert(0, str(ROOT))
 from tools.workspace import prepare_scratch
 
 scratch = prepare_scratch()
+temporary = scratch / 'tmp'
+temporary.mkdir(exist_ok=True)
+bpy.context.preferences.filepaths.temporary_directory = str(temporary) + os.sep
 
 test_name = sys.argv[-1] if len(sys.argv) > 1 and not sys.argv[-1].startswith('-') else "gui_preview"
 report_file = scratch / f"{test_name.replace('gui_', '').replace('.py', '')}-report.json"

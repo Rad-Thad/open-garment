@@ -688,6 +688,12 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             if self.card_kind and self.card_kind.startswith('LIBRARY'):
                 self.refresh_library()
                 self._area.tag_redraw()
+            failure = self._scene.pop('dd_last_error', None) if context.screen.is_animation_playing else None
+            if failure:
+                from . import garment
+                garment.stop(context)
+                self.message = self.error_message = failure
+                self._area.tag_redraw()
             self._timer_ticks = getattr(self, '_timer_ticks', 0) + 1
             if self._timer_ticks % 10 == 0 and self.update_reference(context):
                 self._area.tag_redraw()

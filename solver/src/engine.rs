@@ -863,62 +863,41 @@ impl Solver {
         let clear_n = self.m.max(self.n).max(self.hash_s).max(self.t).max(self.k);
         for s in 0..substeps {
             let param_off = (s * SLOT) as u32;
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&self.pipelines.clear);
-                pass.set_bind_group(0, &self.bg.clear, &[param_off]);
-                pass.dispatch_workgroups(div_ceil(clear_n, WORKGROUP), 1, 1);
-            }
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&self.pipelines.integrate);
-                pass.set_bind_group(0, &self.bg.integrate, &[param_off]);
-                pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
-            }
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&self.pipelines.clear);
+            pass.set_bind_group(0, &self.bg.clear, &[param_off]);
+            pass.dispatch_workgroups(div_ceil(clear_n, WORKGROUP), 1, 1);
+            pass.set_pipeline(&self.pipelines.integrate);
+            pass.set_bind_group(0, &self.bg.integrate, &[param_off]);
+            pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
             for it in 0..iterations {
+                pass.set_pipeline(&self.pipelines.pairs);
                 for c in 0..self.n_colors {
-                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                    pass.set_pipeline(&self.pipelines.pairs);
-                    let color_off = (c * SLOT) as u32;
-                    pass.set_bind_group(0, &self.bg.pairs, &[param_off, color_off]);
-                    let count = self.color_count(c);
-                    pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
+                    pass.set_bind_group(0, &self.bg.pairs, &[param_off, (c * SLOT) as u32]);
+                    pass.dispatch_workgroups(div_ceil(self.color_count(c), WORKGROUP), 1, 1);
                 }
-                if it % 2 == 0 {
+                if it % 2 == 0 && self.hinge_n_colors > 0 {
+                    pass.set_pipeline(&self.pipelines.hinges);
                     for c in 0..self.hinge_n_colors {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                        pass.set_pipeline(&self.pipelines.hinges);
-                        let color_off = (c * SLOT) as u32;
-                        pass.set_bind_group(0, &self.bg.hinges, &[param_off, color_off]);
-                        let count = self.hinge_color_counts[c as usize];
-                        pass.dispatch_workgroups(div_ceil(count, WORKGROUP), 1, 1);
+                        pass.set_bind_group(0, &self.bg.hinges, &[param_off, (c * SLOT) as u32]);
+                        pass.dispatch_workgroups(div_ceil(self.hinge_color_counts[c as usize], WORKGROUP), 1, 1);
                     }
                 }
             }
             if self.params.self_thickness > 0.0 {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                 pass.set_pipeline(&self.pipelines.hash);
                 pass.set_bind_group(0, &self.bg.hash, &[param_off]);
                 pass.dispatch_workgroups(div_ceil(self.t, WORKGROUP), 1, 1);
             }
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&self.pipelines.contacts);
-                pass.set_bind_group(0, &self.bg.contacts, &[param_off]);
-                pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
-            }
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&self.pipelines.apply);
-                pass.set_bind_group(0, &self.bg.apply, &[param_off]);
-                pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
-            }
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&self.pipelines.finish);
-                pass.set_bind_group(0, &self.bg.finish, &[param_off]);
-                pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
-            }
+            pass.set_pipeline(&self.pipelines.contacts);
+            pass.set_bind_group(0, &self.bg.contacts, &[param_off]);
+            pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
+            pass.set_pipeline(&self.pipelines.apply);
+            pass.set_bind_group(0, &self.bg.apply, &[param_off]);
+            pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
+            pass.set_pipeline(&self.pipelines.finish);
+            pass.set_bind_group(0, &self.bg.finish, &[param_off]);
+            pass.dispatch_workgroups(div_ceil(self.n, WORKGROUP), 1, 1);
         }
         self.queue.submit(Some(encoder.finish()));
         self.readback()

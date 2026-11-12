@@ -15,7 +15,8 @@ def run_cmd(cmd, cwd=str(ROOT), desc="", env=None):
     if desc:
         print(f"--> {desc}...")
     t0 = time.time()
-    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', DD_SOLVER='NODES')
+    temporary = str(SCRATCH / 'tmp') + os.sep
+    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', DD_SOLVER='NODES', TMPDIR=temporary, TEMP=temporary, TMP=temporary)
     if env:
         environment.update(env)
     res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=environment)
@@ -219,6 +220,7 @@ def main(argv=None):
     ]
     if any(enabled for enabled, operation in operations):
         prepare_scratch()
+        (SCRATCH / 'tmp').mkdir(exist_ok=True)
     for enabled, operation in operations:
         if enabled and not operation():
             print('Task failed. Diagnostic artifacts remain in scratch; use --clean when finished.')

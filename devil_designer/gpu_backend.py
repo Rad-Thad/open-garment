@@ -290,14 +290,14 @@ def advance(scene):
         iterations = int(Slot(obj, 'Iterations').value)
         try:
             solver.step(substeps, iterations)
-        except Exception:
+        except Exception as error:
             _sessions.pop(obj.name, None)
-            scene['dd_last_error'] = 'GPU solver device lost; reinitialising.'
+            scene['dd_last_error'] = f'GPU solver stopped: {error}'
             continue
         positions = np.frombuffer(solver.positions(), dtype=np.float32).reshape(-1, 3)
         if not np.isfinite(positions).all():
             _sessions.pop(obj.name, None)
-            scene['dd_last_error'] = 'GPU solver diverged; simulation stopped.'
+            scene['dd_last_error'] = 'GPU solver stopped: the cloth became unstable. Reset the drape and simulate again.'
             continue
         _write_positions(obj, positions)
         cached['current'] = positions

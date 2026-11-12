@@ -67,6 +67,7 @@ BASELINE = {
             'sha256': '4b2c06e9564c43edbba7c2420ca55d2786983462b5d20dd76a091c9cc74c6e22',
         },
     },
+    'large': {'Large': {'n_verts': 11856, 'n_faces': 23266, 'n_uvs': 69798, 'sha256': 'fd99a9eb179c2c35149a24f41c348a2416554a141fb8dd42608133d5dcb01671'}},
     'legacy': {
         'Legacy panel': {
             'n_verts': 437,
@@ -113,6 +114,10 @@ def get_saved_designs():
     s.add_ellipse((0, 0), (0.4, 0.4))
     s.document.patterns[0].name = 'Ellipse'
     designs['ellipse'] = s.document
+    s = Session()
+    s.add([(-1.55, -.58), (1.626, -.58), (1.626, .674), (-1.55, .674)])
+    s.document.patterns[0].name = 'Large'
+    designs['large'] = s.document
     result = {name: Document.loads(doc.dumps()) for name, doc in designs.items()}
     result['legacy'] = Document.loads(LEGACY_DESIGN_JSON)
     return result
@@ -121,7 +126,7 @@ def get_saved_designs():
 class MeshingRegressionTests(unittest.TestCase):
     def test_saved_designs_structure(self):
         designs = get_saved_designs()
-        self.assertEqual(set(designs.keys()), {'tee', 'tank', 'skirt', 'ellipse', 'legacy'})
+        self.assertEqual(set(designs.keys()), {'tee', 'tank', 'skirt', 'ellipse', 'large', 'legacy'})
         for name, doc in designs.items():
             self.assertTrue(doc.patterns)
             for p in doc.patterns:

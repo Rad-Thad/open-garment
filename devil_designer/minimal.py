@@ -600,6 +600,11 @@ class MinimalCards:
             fabric_override = pattern.preset.title() if getattr(pattern, 'fabric_override', False) else 'Garment default'
             rows.append(('MENU', 'PIECE_FABRIC_MENU', 'Fabric', fabric_override))
             density_label = {'AUTO': 'Garment default', 'COARSE': 'Coarse', 'STANDARD': 'Standard', 'FINE': 'Fine', 'ULTRA': 'Ultra'}.get(pattern.mesh_density, pattern.mesh_density.title())
+            if pattern.mesh_density == 'AUTO':
+                from .density import effective_spacing
+                widened = effective_spacing(pattern, scene.dd_spacing)
+                if widened > scene.dd_spacing:
+                    density_label = f'Auto {widened * 100:.1f} cm'
             rows.append(('MENU', 'PIECE_DENSITY_MENU', 'Mesh density', density_label))
             from .piece_states import label
             simulation_label = label(pattern).replace(' · Strengthened ×4', ' +4×')

@@ -162,6 +162,11 @@ def run():
             button('SIMULATE')
             button('SIMULATE')
             check(bool(garment.generated(scene, 'simulation')), 'simulation ready for regression fault injection')
+            garment.start_playback(bpy.context)
+            scene['dd_last_error'] = 'GPU solver stopped: injected'
+            workspace.handle_event(bpy.context, event('TIMER', (0, 0), 'NOTHING'))
+            check(workspace.error_message == 'GPU solver stopped: injected', 'a solver failure during playback is shown in the editor')
+            check(not bpy.context.screen.is_animation_playing, 'a solver failure stops playback')
 
             original_keep = garment.keep_drape
 

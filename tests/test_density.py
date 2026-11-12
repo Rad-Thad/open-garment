@@ -32,6 +32,16 @@ class DensityTests(unittest.TestCase):
         pattern.mesh_density='COARSE'
         self.assertEqual(effective_spacing(pattern,.2),.2)
 
+    def test_large_default_piece_widens_to_vertex_budget(self):
+        session=Session()
+        session.add([(-1.55,-.58),(1.626,-.58),(1.626,.674),(-1.55,.674)])
+        pattern=session.document.patterns[0]
+        self.assertAlmostEqual(effective_spacing(pattern,.02),.0276852,places=6)
+        pattern.mesh_density='STANDARD'
+        self.assertEqual(effective_spacing(pattern,.02),.02)
+        session.add([(0,0),(30,0),(30,30),(0,30)])
+        self.assertEqual(effective_spacing(session.document.patterns[1],.2),.2)
+
     def test_invalid_spacing_and_density(self):
         pattern=self.session.document.patterns[0]
         for spacing in (0,.002,.201,math.nan,math.inf):
@@ -216,6 +226,15 @@ class BlenderDensityTests(unittest.TestCase):
                 for edge,fraction in side:
                     samples=plan.outputs[edge.pattern]['samples'][edge.start]
                     self.assertLess(min(abs(fraction-sample) for sample,_ in samples),1e-8)
+
+    def test_large_default_piece_meshes_near_budget(self):
+        from devil_designer.meshing import fabric_mesh
+        session=Session()
+        session.add([(-1.55,-.58),(1.626,-.58),(1.626,.674),(-1.55,.674)])
+        document=session.document
+        pattern=document.patterns[0]
+        plan=boundary_plan(document,.02)
+        self.assertTrue(5500<=len(fabric_mesh(document,pattern,effective_spacing(pattern,.02),plan)[0])<=6500)
 
     def test_panel_resolution_seams_and_rebuild(self):
         import devil_designer

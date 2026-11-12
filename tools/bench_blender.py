@@ -29,6 +29,8 @@ for spacing in (.025, .012, .006):
         t0 = time.perf_counter()
         scene.frame_set(scene.frame_current + 1)
         times.append(time.perf_counter() - t0)
+    if solver == 'GPU' and simulation.get('dd_steps') != 120:
+        raise SystemExit(f"GPU solver stepped {simulation.get('dd_steps')} of 120 frames at spacing {spacing}: {scene.get('dd_last_error')}")
     mean_ms = sum(times) / len(times) * 1000.0
     coordinates = xpbd_live.evaluated_points(bpy.context, simulation)
     rest = simulation.data.attributes['rest_length'].data
