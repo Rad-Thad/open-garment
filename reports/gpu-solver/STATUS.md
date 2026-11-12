@@ -150,6 +150,8 @@ Blender (`tools/bench_blender.py`, demo, 120 frames):
 
 Gates: stretch **met** (all ≤ 1.15). Speed **not met** — GPU is ~3×–17× slower than NODES and far above `NODES/5` and the 33 ms cap at 0.006 m. Root cause is the per-colour Gauss-Seidel dispatch (`iterations × colours` compute passes per substep) plus `ITERATIONS = 8` to meet stretch. The plan's Jacobi remedy (one vertex-centric dispatch per iteration, doubled iterations) diverges for the stiff `hang` constraints (compliance 1e-8) without an under-relaxation term the plan does not specify, so it is not applied. The stretch-over-speed priority is honoured (scaled iterations kept) and both numbers are reported.
 
+R2 correction: "stretch met" above relied on the invalid 0.012 m and 0.006 m GPU rows; the first valid 0.006 m value is 1.204 (F10). The R1 Verification counts below are R1 numbers; R2 counts are in "Verification (R2)".
+
 ### Verification
 
 Mocked (no Blender): `tools.check_dead_code` clean; `unittest discover -s tests -p 'test_*.py'` **482 pass, 24 skipped** (includes new export + grade-edit cases); `cargo test --release` **8/8** (contact ×2, hang, hinge, layers, repeat, seam, sphere); `grep -rnE '//|/\*' solver/src solver/tests solver/examples` empty.
