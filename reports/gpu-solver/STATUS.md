@@ -77,7 +77,8 @@ None of these is caused by R2. The draw-coverage gate (`gui_fast_flow`) stays un
 
 ### Deviation from the R2 plan
 
-- The density sweep in `tests/blender_gpu.py` runs directly after demo creation, not after the Keep check. After Keep, the kept `DD Garment` stays in the scene and the next drape is measured against it: 0.01 m stretch 1.159–1.165 after Keep vs 1.125 fresh and 1.127 after a reset without Keep. The sweep reads `dd_steps` with `.get` so a never-stepped solver fails the named check instead of raising `KeyError`.
+- The density sweep in `tests/blender_gpu.py` runs directly after demo creation, not after the Keep check. A kept garment is a collision body for the next drape by default ("Wear over", `layering.collision_bodies`), so a drape after Keep is a layered drape over the kept `DD Garment`: 0.01 m stretch 1.159–1.165 after Keep vs 1.125 fresh and 1.127 after a reset without Keep. The sweep measures single-layer drapes; layered-drape stretch above 1.15 is reported, not gated. The sweep reads `dd_steps` with `.get` so a never-stepped solver fails the named check instead of raising `KeyError`.
+- Vertex budget with seams: a large Garment default piece sewn to a small piece keeps its widened interior spacing; only its boundary follows the finer shared sampling (6,136 vertices alone, 6,258 sewn; 0.02 m garment density).
 
 ### Not addressed (reported)
 
@@ -162,6 +163,6 @@ Known-failing GUI suites on this Mac (pre-existing, from `reports/mac-baseline/S
 ### Accepted limitations
 
 - Calibration gate: not met; owner waiver stands (see table).
-- Crate and Blender speed gates: not met (see table); stretch gates met.
+- Crate and Blender speed gates: not met (see table); stretch gates met in R1 only on cloth that, at 0.012 m and 0.006 m, never moved. R2 measures 1.204 at 0.006 m (F10).
 - Superseded in R2: the GPU solver failures attributed here to "a transient Metal device loss" were the per-command-buffer compute pass limit; `advance` now reports the failure instead of hiding it.
 - The measured-fabric volume check (`stiffer drapes larger`) is non-deterministic under self-collision (the GPU hash chain uses atomics), so the measured loop disables `dd_self_collision` for that section; its assertions (step count, stay-on-body, bend differentiation) exercise body contact and bending, not self-collision.
