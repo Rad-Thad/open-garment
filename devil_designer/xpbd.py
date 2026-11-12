@@ -390,12 +390,16 @@ def seam_links(rest, edges, loose):
 
 
 def add_edges(mesh, links):
-    start = len(mesh.edges)
-    mesh.edges.add(len(links))
-    flat = np.empty(len(mesh.edges) * 2, dtype=np.int32)
-    mesh.edges.foreach_get('vertices', flat)
-    flat[start * 2:] = links.ravel()
-    mesh.edges.foreach_set('vertices', flat)
+    surface = bmesh.new()
+    try:
+        surface.from_mesh(mesh)
+        surface.verts.ensure_lookup_table()
+        verts = surface.verts
+        for first, second in links.tolist():
+            surface.edges.new((verts[first], verts[second]))
+        surface.to_mesh(mesh)
+    finally:
+        surface.free()
     mesh.update()
 
 
