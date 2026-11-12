@@ -78,6 +78,12 @@ def _write_positions(obj, positions):
     obj.data.update()
 
 
+def _canonical_triangles(triangles):
+    first = np.argmin(triangles, axis=1)
+    rotated = triangles[np.arange(len(triangles))[:, None], (first[:, None] + np.arange(3)) % 3]
+    return rotated[np.lexsort((rotated[:, 2], rotated[:, 1], rotated[:, 0]))]
+
+
 def session(scene, obj):
     from . import xpbd
     cached = _sessions.get(obj.name)
@@ -176,6 +182,7 @@ def session(scene, obj):
         body_co = collider_positions.reshape(-1, 3)
         collider_triangles = np.empty(len(body_mesh.loop_triangles) * 3, dtype=np.int32)
         body_mesh.loop_triangles.foreach_get('vertices', collider_triangles)
+        collider_triangles = _canonical_triangles(collider_triangles.reshape(-1, 3)).ravel()
         for k in range(3):
             indices = tack_vertices[:, k].astype(np.int32)
             tack_target += body_co[indices] * tack_weights[:, k:k + 1]
