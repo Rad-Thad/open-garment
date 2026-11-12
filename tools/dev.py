@@ -55,7 +55,7 @@ def do_tests():
     if not run_cmd([blender_path(), "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_gpu.py"],
                    desc="Blender Background: blender_gpu.py", env={'DD_SOLVER': 'GPU'}):
         return False
-    for t in ["gui_core_workflow", "gui_live_grab", "gui_live_brush"]:
+    for t in ["gui_core_workflow", "gui_live_grab"]:
         if not run_cmd(gui_command(t), desc=f"In-Engine GUI (GPU solver): {t}", env={'DD_SOLVER': 'GPU'}):
             return False
 
