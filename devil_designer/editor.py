@@ -3,6 +3,7 @@ import traceback
 import time
 import bpy
 import gpu
+from mathutils import Vector
 from gpu_extras.presets import draw_texture_2d
 from .core import Document, Session, Vertex
 from . import curves
@@ -11,14 +12,16 @@ from .interaction import OverlayControls
 from .minimal import MinimalCards, minimal_layout
 from .design_tools import DesignTools
 from .silhouette import BodyReference, torso_alignment
-from . import history,layering
+from . import history,layering,snapping
 from .fit_display import FitOverlay
 
-OVERLAY_REFRESH = .4
+OVERLAY_REFRESH = .1
 RADIUS_STEP = 1.15
 BRUSH_SPACING = .6
 NON_KEYBOARD_TOKENS = ('MOUSE', 'TRACKPAD', 'TIMER', 'NDOF', 'WINDOW', 'PEN', 'ERASER', 'XR_', 'ACTIONZONE', 'EVT_', 'TEXTINPUT')
 _active = None
+PIN_DEPTH_MARGIN = .002
+HANDLE_CURSORS = {'SCALE': 'SCROLL_XY', 'ROTATE': 'HAND', 'PIVOT': 'CROSSHAIR'}
 
 
 def close_active():
@@ -44,6 +47,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             _active.cleanup()
             return {'FINISHED'}
         self._area, self._window, self._scene = context.area, context.window, context.scene
+        self._scene_name = context.scene.name
         self._region = next(r for r in context.area.regions if r.type == 'WINDOW')
         try:
             self.session = Session(Document.loads(self._scene.dd_document))
@@ -66,6 +70,8 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         self.message = 'Drag to draw a panel. Sew its edges, then Simulate.'
         self.error_message = None
         self._closed = False
+        self.snap_marker = None
+        self.snap_cache = None
         self.shaping = None
         self.shape_cursor = None
         self.shaping_strip_rects = {}
@@ -173,11 +179,21 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             self.window_drag = dict(hit=hit, pointer=self.pointer, rect=self.canvas_layout.panel)
             return {'RUNNING_MODAL'}
         if event.type == 'MOUSEMOVE':
-            cursor = 'DEFAULT' if not hit else 'SCROLL_XY' if hit == 'MOVE' or len(hit) > 1 else 'MOVE_X' if hit in {'L', 'R'} else 'MOVE_Y'
+            cursor = self.handle_cursor() if not hit else 'SCROLL_XY' if hit == 'MOVE' or len(hit) > 1 else 'MOVE_X' if hit in {'L', 'R'} else 'MOVE_Y'
             if cursor != self.window_cursor:
                 self._window.cursor_set(cursor)
                 self.window_cursor = cursor
         return None
+
+    def handle_cursor(self):
+        gesture = self.gesture
+        if gesture and gesture.get('mode') == 'TRANSFORM' and gesture.get('handle'):
+            return HANDLE_CURSORS[gesture['kind']]
+        if gesture and gesture.get('mode') == 'SET_PIVOT':
+            return HANDLE_CURSORS['PIVOT']
+        if self.card_kind or not self.canvas_layout.canvas.contains(*self.pointer):
+            return 'DEFAULT'
+        return HANDLE_CURSORS.get(self.transform_frame_hit(), 'DEFAULT')
 
     def drag_window(self, drag):
         rect = drag['rect']
@@ -211,6 +227,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         self.message = 'Full canvas restored.'
 
     def make_layout(self):
+        from . import garment
         region, space = self._region, self._area.spaces.active
         left = right = top = bottom = 0
         for r in self._area.regions:
@@ -231,7 +248,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         position = tuple(v * scale for v in self.window_rect) if self.window_rect else None
         layout = Layout(region.width, region.height, scale, self.full, max(0, left), max(0, right), top, bottom,
                         position=position)
-        minimal_layout(layout, bool(self.draft), bool(self.confirm_action), bpy.context.screen.is_animation_playing,
+        minimal_layout(layout, bool(self.draft), bool(self.confirm_action), garment.drape_playing(bpy.context),
                        kept=self.drape_document is not None or bool(layering.kept_garments(self._scene)),
                        stale=self.drape_document is not None and self.drape_document != self._scene.dd_document)
         self.place_tool_strip(layout)
@@ -274,7 +291,48 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         self.view.cx += (canvas.x + canvas.w / 2 - fit_rect.x - fit_rect.w / 2) / self.view.zoom
         self.view.cy += (canvas.y + canvas.h / 2 - fit_rect.y - fit_rect.h / 2) / self.view.zoom
 
+    def refit_spans(self, old):
+        from . import garment
+        unit = garment.metres_per_unit(self._scene)
+        height = old['high_z'] - old['low_z']
+        spans = {}
+        for panel in garment.generated(self._scene, 'panel'):
+            low, high = garment.bounds(panel)
+            up = (panel.matrix_world.to_3x3() @ Vector((0, 1, 0))).normalized().z
+            bottom, top = ((value * unit - old['low_z']) / height for value in (low.z, high.z))
+            spans[panel.get('dd_pattern_id')] = (top, bottom, True) if up < -.7 else (bottom, top, up > .7)
+        return spans
+
+    def refit_to(self, previous, body):
+        from . import garment, refit
+        from .measurements import estimate_body_measurements
+        old = estimate_body_measurements(previous, self._scene)
+        new = estimate_body_measurements(body, self._scene)
+        if old is None or new is None:
+            self.message = 'The garment kept its size because one of the bodies could not be measured.'
+            return False
+        spans = self.refit_spans(old)
+        draped = bool(garment.generated(self._scene, 'simulation'))
+        result = {}
+        changed = self.run_edit(lambda: self.session.commit(lambda: result.update(zip(('along', 'chest'), refit.refit_document(self.session.document, spans, old, new)))),
+                                'Garment refit.')
+        if changed and result:
+            region = 'evenly, because a body has no clear waist and hips' if old['fallback'] or new['fallback'] else 'each body region by its own girth'
+            self.message = (f"Garment refit to {body.name}: length {result['along'] * 100:.0f}%, chest {result['chest'] * 100:.0f}%, "
+                            f'{region}. Ctrl+Z keeps the old size.')
+        return changed and draped
+
     def choose_body(self, body, context):
+        previous = self._scene.dd_avatar
+        redrape = False
+        refit_note = ''
+        if (body is not None and previous is not None and previous != body and self.session.document.patterns
+                and self._scene.dd_library_refit):
+            try:
+                redrape = self.refit_to(previous, body)
+            except ReferenceError:
+                redrape = False
+            refit_note = self.message
         self._scene.dd_avatar = body
         if body is None:
             self.pending_simulation = False
@@ -287,6 +345,14 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             if self.pending_simulation:
                 self.pending_simulation = False
                 self.perform_action('SIMULATE')
+            elif redrape and pending_job(context) is not None:
+                self.redrape_after_fit = True
+                refit_note += ' It re-drapes when the arrangement points are ready.'
+            elif redrape:
+                self.perform_action('SIMULATE')
+                refit_note = (refit_note + ' ' + self.message).strip()
+        if refit_note:
+            self.message = refit_note
 
     def persist(self):
         from . import live_panels, piece_states
@@ -314,7 +380,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             self.message = message if changed is not False else "Nothing to change."
             if self._scene.get('dd_arrangement_message'):self.message+=' '+self._scene['dd_arrangement_message']
             if self.session.last_repairs:
-                self.message += f" {self.session.last_repairs} affected sewing pair(s) removed; re-pair edited edges."
+                self.message += f" {self.session.last_repairs} affected sewing pair(s) or elastic edge(s) removed; review edited edges."
             return True
         except ValueError as exc:
             self.error_message = str(exc)
@@ -323,6 +389,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
 
     def cancel_gesture(self):
         self.gesture = None
+        self.snap_marker = None
         self.preview = None
         self.draft = []
         self.pending_edge = None
@@ -380,7 +447,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                         'POLYGON': "Click corners. Click the first corner or press Enter to close.",
                         'RECTANGLE': "Drag on the canvas to create a rectangular pattern.",
                         'ELLIPSE': 'Drag an ellipse; edit its Bezier handles with V.',
-                        'INTERNAL': 'Click internal points. Enter makes a line; click its first point for a closed shape.',
+                        'INTERNAL': 'Click internal points. Enter makes a line; click its first point for a closed shape. Drag a line point to move it.',
                         'PIN': 'Click fabric to pin it. Click an existing pin to select it.',
                         'PIN_BOX': 'Drag over fabric to pin an area.',
                         'PIN_EDGE': 'Click an edge to pin along it.',
@@ -395,19 +462,128 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             self.reveal_3d()
         return True
 
-    def world_pointer(self, event, anchor=None):
+    def design_snap_targets(self):
+        if self.snap_cache is None or self.snap_cache[0] is not self.session.document or self.snap_cache[1] != self._stored:
+            self.snap_cache = (self.session.document, self._stored, snapping.Targets(self.session.document))
+        return self.snap_cache[2]
+
+    def snap_reach(self):
+        return snapping.SNAP_PIXELS * self.canvas_layout.scale / self.view.zoom
+
+    def geometry_snap(self, point, targets):
+        self.snap_marker = targets.snap(point, self.snap_reach())
+        return self.snap_marker
+
+    def fabric_point(self, event, pattern):
+        raw = self.view.world(self.pointer, self.canvas_layout.canvas)
+        snapped = self.world_pointer(event, geometry=True)
+        marker = self.snap_marker
+        spot = snapping.fabric_spot(pattern, (snapped, self.world_pointer(event), raw)) or raw
+        self.snap_marker = marker if marker is not None and spot == snapped else None
+        return spot
+
+    def edge_click_fraction(self, event, edge):
+        control = self.session.document.edge_curve(edge)
+        if self.snap != event.ctrl:
+            found = self.geometry_snap(self.view.world(self.pointer, self.canvas_layout.canvas), self.design_snap_targets())
+            fraction = snapping.edge_fraction(control, found[0], self.snap_reach()) if found else None
+            if fraction is not None:
+                return fraction
+            self.snap_marker = None
+        return curves.closest_fraction(control, self.world_pointer(event))[0]
+
+    def click_snap_preview(self, event):
+        if self.tool == 'DART' and len(self.dart_base) < 2:
+            edge = self.design_hit_edge()
+            if edge is not None and edge.path == 'OUTER':
+                self.edge_click_fraction(event, edge)
+                return
+        else:
+            pattern, _ = self.design_hit()
+            if pattern is not None:
+                self.fabric_point(event, pattern)
+                return
+        self.snap_marker = None
+
+    def move_snap(self):
+        if 'snap' not in self.gesture:
+            nodes = self.session.resolve_selection()[0]
+            start = self.gesture['start']
+            source = min(((node.x, node.y) for node in nodes.values()), key=lambda spot: math.dist(spot, start), default=start)
+            self.gesture['snap'] = dict(source=source, targets=snapping.Targets(self.session.document, self.session.moving_vertex_ids()))
+        return self.gesture['snap']
+
+    def pivot_candidate(self):
+        world = self.view.world(self.pointer, self.canvas_layout.canvas)
+        reach = 8 * self.canvas_layout.scale / self.view.zoom
+        spot, label = self.session.find_pivot_candidate(world, reach)
+        if label == 'Free':
+            found = self.design_snap_targets().snap(world, reach)
+            if found:
+                return found[0], snapping.LABELS[found[1]]
+        return spot, label
+
+    def world_pointer(self, event, anchor=None, geometry=False):
         x, y = self.view.world(self.pointer, self.canvas_layout.canvas)
         if self.snap != event.ctrl:
-            x, y = round(x / .01) * .01, round(y / .01) * .01
+            found = self.geometry_snap((x, y), self.design_snap_targets()) if geometry else None
+            x, y = found[0] if found else (round(x / .01) * .01, round(y / .01) * .01)
         if anchor is not None and event.shift and self.tool in {'POLYGON', 'KNIFE'}:
             if abs(x - anchor[0]) > abs(y - anchor[1]):
                 y = anchor[1]
             else:
                 x = anchor[0]
+            if geometry and self.snap_marker and math.dist(self.snap_marker[0], (x, y)) > 1e-9:
+                self.snap_marker = None
         return x, y
 
     def hit(self):
         return self.design_hit()
+
+    def draft_click(self, event, settle=False):
+        if self.tool == 'INTERNAL' and not self.draft and self.session.selected is None:
+            owner, _ = self.hit()
+            if owner:
+                self.session.selected = owner.id
+                self.session.path = 'OUTER'
+        first_pt = (self.draft[0].x, self.draft[0].y) if (self.draft and hasattr(self.draft[0], 'x')) else (self.draft[0] if self.draft else None)
+        if len(self.draft) >= 3 and first_pt and math.dist(self.pointer, self.view.screen(first_pt, self.canvas_layout.canvas)) < 12 * self.canvas_layout.scale:
+            self.finish_polygon(True)
+            return
+        prev_pt = (self.draft[-1].x, self.draft[-1].y) if (self.draft and hasattr(self.draft[-1], 'x')) else (self.draft[-1] if self.draft else None)
+        point = self.world_pointer(event, prev_pt, geometry=True)
+        outline_edge = self.design_hit_edge() if self.tool == 'INTERNAL' else None
+        if outline_edge is not None and outline_edge.path == 'OUTER':
+            document = self.session.document
+            point = document.edge_point(outline_edge, curves.closest_fraction(document.edge_curve(outline_edge), point)[0])
+        if not self.draft or math.dist(point, prev_pt) > 1e-6:
+            v = Vertex(point[0], point[1], point_type='CORNER')
+            self.draft.append(v)
+            self.preview = [point]
+            self.gesture = None if settle else dict(mode='DRAFT_POINT', vertex=v, start=point, moved=False)
+
+    def internal_point_grab(self):
+        pattern, corner = self.hit()
+        if pattern is None or corner is None or self.hit_path == 'OUTER' or self.hit_handle:
+            return None
+        return dict(mode='PATH_GRAB', pattern=pattern.id, path=self.hit_path, corner=corner, pointer=self.pointer,
+                    start=self.view.world(self.pointer, self.canvas_layout.canvas))
+
+    def path_grab_event(self, event):
+        grab = self.gesture
+        if event.type == 'MOUSEMOVE':
+            if math.dist(self.pointer, grab['pointer']) <= 4 * self.canvas_layout.scale:
+                return {'RUNNING_MODAL'}
+            vertex = self.session.document.find(grab['pattern']).path(grab['path']).vertices[grab['corner']]
+            self.session.select_point(grab['pattern'], grab['path'], grab['corner'], toggle=False)
+            self.sync_selection()
+            self.gesture = dict(mode='MOVE', start=grab['start'], ref_pos=(vertex.x, vertex.y), delta=(0.0, 0.0), moved=False)
+            return None
+        self.gesture = None
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            self.draft_click(event, settle=True)
+            return {'RUNNING_MODAL'}
+        return None
 
     def hit_edge(self):
         return self.design_hit_edge()
@@ -445,7 +621,6 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                 self.show_card('BODY')
                 self.message = 'Choose the body. Simulation will start automatically.'
                 return False
-                return False
             self.choose_body(body, context)
         if len(self.session.document.patterns) == 2 and all(pattern.placement_mode=='LEGACY' for pattern in self.session.document.patterns) and not garment.generated(self._scene, 'panel'):
             result = bpy.ops.devil_designer.arrange('EXEC_DEFAULT')
@@ -454,7 +629,8 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         return True
 
     def workflow_action(self, button):
-        if button == 'SIMULATE' and bpy.context.screen.is_animation_playing:
+        from . import garment
+        if button == 'SIMULATE' and garment.drape_playing(bpy.context):
             button = 'STOP'
         blocker = self.workflow_blocker(button)
         self.error_message = None
@@ -529,11 +705,13 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         if context.area != self._area or context.region != self._region or context.window != self._window:
             return
         try:
+            self.reacquire_scene()
             self.canvas_layout = self.make_layout()
             if context.screen.is_animation_playing:
                 self.draw_cached_overlay()
             else:
                 self.draw_interface()
+            self.renderer.draw_cloth_pins(self)
             self.renderer.draw_grab_ring(self)
         except Exception as exc:
             self.error_message = f"Render error: {exc}"
@@ -569,16 +747,28 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             return {'FINISHED'}
         try:
             return self.handle_event(context, event)
-        except (ReferenceError, RuntimeError):
+        except ReferenceError:
             self.cleanup()
+            self.report({'WARNING'}, 'Devil Designer closed because the view or scene it was using is gone. Your design is saved in the scene. Reopen it from View > Devil Designer.')
             return {'CANCELLED'}
         except Exception as exc:
-            print("Devil Designer modal error:", exc)
+            traceback.print_exc()
             self.error_message = f"Editor error: {exc}"
             self.message = self.error_message
             return {'RUNNING_MODAL'}
 
+    def reacquire_scene(self):
+        try:
+            self._scene_name = self._scene.name
+            return
+        except ReferenceError:
+            pass
+        scene = self._window.scene
+        if scene is not None and scene.name == self._scene_name:
+            self._scene = scene
+
     def handle_event(self, context, event):
+        self.reacquire_scene()
         if event.type == 'MOUSEMOVE' and self.tool == 'SHAPE' and self.shaping is not None and self.shaping.held:
             self.pointer = (event.mouse_x - self._region.x, event.mouse_y - self._region.y)
             self.shaping.drag(*self.pointer_ray())
@@ -597,6 +787,8 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             self.confirm_message = ''
         self.canvas_layout = self.make_layout()
         self.pointer = (event.mouse_x - self._region.x, event.mouse_y - self._region.y)
+        if event.type == 'MOUSEMOVE':
+            self.snap_marker = None
         panel = self.canvas_layout.panel.contains(*self.pointer) or any(card[0].contains(*self.pointer) for card in self.visible_cards())
         canvas = self.canvas_layout.canvas.contains(*self.pointer)
         if self.flyout and event.value == 'PRESS' and event.type in {'LEFTMOUSE', 'RIGHTMOUSE'} and not panel:
@@ -653,7 +845,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         if result is not None:
             return result
         from .arrangement_controls import interaction_active,point_event
-        if (not panel or interaction_active()) and self.tool != 'SEW' and not self.pending_tack and not self.pending_place:
+        if (not panel or interaction_active()) and self.tool not in {'SEW', 'PEN'} and not self.pending_tack and not self.pending_place:
             try:arrangement_result=point_event(context,event)
             except ValueError as failure:
                 self.message=str(failure)
@@ -666,10 +858,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             edge = self.design_hit_edge()
             if edge:
                 self.cancel_gesture()
-                click_pt = self.world_pointer(event)
-                control = self.session.document.edge_curve(edge)
-                frac, _ = curves.closest_fraction(control, click_pt)
-                frac = max(0.01, min(0.99, frac))
+                frac = max(0.01, min(0.99, self.edge_click_fraction(event, edge)))
                 new_v = [None]
                 def apply_split():
                     v = self.session.document.split_edge(edge, frac)
@@ -695,6 +884,8 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                 self.message = self.error_message = failure
                 self._area.tag_redraw()
             self._timer_ticks = getattr(self, '_timer_ticks', 0) + 1
+            if self.announce_reference():
+                self._area.tag_redraw()
             if self._timer_ticks % 10 == 0 and self.update_reference(context):
                 self._area.tag_redraw()
             return {'PASS_THROUGH'}
@@ -762,6 +953,10 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             return {'FINISHED'}
         if event.ctrl and event.type == 'S':
             return {'PASS_THROUGH'}
+        if self.gesture and self.gesture.get('mode') == 'PATH_GRAB':
+            grabbed = self.path_grab_event(event)
+            if grabbed is not None:
+                return grabbed
         if self.gesture and self.gesture.get('mode') == 'DRAFT_POINT':
             if event.type not in {'MOUSEMOVE', 'LEFTMOUSE'} or (event.type == 'LEFTMOUSE' and press):
                 self.gesture = None
@@ -845,7 +1040,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                     self.gesture['last'] = self.pointer
                 elif mode in {'RECT', 'ELLIPSE'}:
                     a = self.gesture['start']
-                    b = self.world_pointer(event)
+                    b = self.world_pointer(event, geometry=self.tool != 'PIN_BOX')
                     if event.shift:
                         side = max(abs(b[0] - a[0]), abs(b[1] - a[1]))
                         b = (a[0] + math.copysign(side, b[0] - a[0]), a[1] + math.copysign(side, b[1] - a[1]))
@@ -942,7 +1137,15 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                     world_start = self.gesture['start']
                     raw_x = ref[0] + (world_now[0] - world_start[0])
                     raw_y = ref[1] + (world_now[1] - world_start[1])
+                    found = None
                     if self.snap != event.ctrl:
+                        snap = self.move_snap()
+                        source = snap['source']
+                        found = self.geometry_snap((source[0] + world_now[0] - world_start[0], source[1] + world_now[1] - world_start[1]), snap['targets'])
+                    if found:
+                        snapped_x = ref[0] + found[0][0] - source[0]
+                        snapped_y = ref[1] + found[0][1] - source[1]
+                    elif self.snap != event.ctrl:
                         snapped_x = round(raw_x / 0.01) * 0.01
                         snapped_y = round(raw_y / 0.01) * 0.01
                     else:
@@ -955,6 +1158,8 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                             dy = 0.0
                         else:
                             dx = 0.0
+                        if found and math.dist((dx, dy), (snapped_x - ref[0], snapped_y - ref[1])) > 1e-9:
+                            self.snap_marker = None
                     self.gesture['delta'] = (dx, dy)
                     if abs(dx) > 1e-6 or abs(dy) > 1e-6:
                         self.gesture['moved'] = True
@@ -967,10 +1172,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                     world_now = self.view.world(self.pointer, self.canvas_layout.canvas)
                     self.gesture['fraction'] = curves.closest_fraction(self.session.document.edge_curve(self.gesture['edge'].full()), world_now)[0]
                 elif mode == 'SET_PIVOT':
-                    c = self.canvas_layout.canvas
-                    world_now = self.view.world(self.pointer, c)
-                    tol = 8 * self.canvas_layout.scale / self.view.zoom
-                    cand_pt, cand_lbl = self.session.find_pivot_candidate(world_now, tol)
+                    cand_pt, cand_lbl = self.pivot_candidate()
                     self.gesture['chosen'] = cand_pt
                     self.gesture['label'] = cand_lbl
                 elif mode == 'LASSO_SELECT':
@@ -999,7 +1201,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                         v.incoming = None
                         v.outgoing = None
                     self.gesture = None
-                    self.preview = [self.world_pointer(event, (v.x, v.y))]
+                    self.preview = [self.world_pointer(event, (v.x, v.y), geometry=True)]
                     return {'RUNNING_MODAL'}
                 elif mode == 'EDGE_BEND':
                     if self.gesture.get('moved'):
@@ -1052,8 +1254,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                                 self.session.select_edge(pending[1], toggle=False)
                             self.sync_selection()
                 elif mode == 'SET_PIVOT':
-                    tolerance = 8 * self.canvas_layout.scale / self.view.zoom
-                    pt, _ = self.session.find_pivot_candidate(self.view.world(self.pointer, self.canvas_layout.canvas), tolerance)
+                    pt, _ = self.pivot_candidate()
                     self.session.set_pivot(pt[0], pt[1])
                     self.gesture = None
                     self.message = f"Pivot set ({self.session.placed_pivot[0]:.3f}, {self.session.placed_pivot[1]:.3f})."
@@ -1230,7 +1431,11 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             elif event.type == 'MOUSEMOVE':
                 if not self.gesture or self.gesture.get('mode') != 'DRAFT_POINT':
                     prev_pt = (self.draft[-1].x, self.draft[-1].y) if hasattr(self.draft[-1], 'x') else self.draft[-1]
-                    self.preview = [self.world_pointer(event, prev_pt)]
+                    self.preview = [self.world_pointer(event, prev_pt, geometry=True)]
+        elif event.type == 'MOUSEMOVE' and canvas and not self.gesture and self.tool in {'POLYGON', 'INTERNAL', 'KNIFE', 'RECTANGLE', 'ELLIPSE'}:
+            self.world_pointer(event, geometry=True)
+        elif event.type == 'MOUSEMOVE' and canvas and not self.gesture and self.tool in {'PIN', 'TACK', 'TACK_FABRIC', 'DART'}:
+            self.click_snap_preview(event)
         if self.seam_selected and press and event.type == 'B':
             self.run_edit(lambda: self.session.reverse_seam(self.seam_selected), 'Seam direction reversed.')
             return {'RUNNING_MODAL'}
@@ -1260,38 +1465,23 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                 self.sew_click()
             elif self.tool == 'KNIFE':
                 anchor = self.draft[-1] if self.draft else None
-                point = self.world_pointer(event, anchor)
+                point = self.world_pointer(event, anchor, geometry=True)
                 if anchor is None or math.dist(point, anchor) > 1e-6:
                     self.draft.append(point)
                     self.preview = [point]
             elif self.tool in {'POLYGON', 'INTERNAL'}:
-                if self.tool == 'INTERNAL' and not self.draft and self.session.selected is None:
-                    owner, _ = self.hit()
-                    if owner:
-                        self.session.selected = owner.id
-                        self.session.path = 'OUTER'
-                first_pt = (self.draft[0].x, self.draft[0].y) if (self.draft and hasattr(self.draft[0], 'x')) else (self.draft[0] if self.draft else None)
-                if len(self.draft) >= 3 and first_pt and math.dist(self.pointer, self.view.screen(first_pt, self.canvas_layout.canvas)) < 12 * self.canvas_layout.scale:
-                    self.finish_polygon(True)
+                grab = self.internal_point_grab() if self.tool == 'INTERNAL' and not self.draft else None
+                if grab:
+                    self.gesture = grab
                 else:
-                    prev_pt = (self.draft[-1].x, self.draft[-1].y) if (self.draft and hasattr(self.draft[-1], 'x')) else (self.draft[-1] if self.draft else None)
-                    point = self.world_pointer(event, prev_pt)
-                    outline_edge = self.design_hit_edge() if self.tool == 'INTERNAL' else None
-                    if outline_edge is not None and outline_edge.path == 'OUTER':
-                        document = self.session.document
-                        point = document.edge_point(outline_edge, curves.closest_fraction(document.edge_curve(outline_edge), point)[0])
-                    if not self.draft or math.dist(point, prev_pt) > 1e-6:
-                        v = Vertex(point[0], point[1], point_type='CORNER')
-                        self.draft.append(v)
-                        self.preview = [point]
-                        self.gesture = dict(mode='DRAFT_POINT', vertex=v, start=point, moved=False)
+                    self.draft_click(event)
             elif self.tool in {'RECTANGLE', 'ELLIPSE', 'PIN_BOX'}:
                 if self._scene.dd_internal_mode:
                     owner, _ = self.hit()
                     if owner:
                         self.session.selected = owner.id
                         self.session.path = 'OUTER'
-                self.gesture = {'mode': 'ELLIPSE' if self.tool == 'ELLIPSE' else 'RECT', 'start': self.world_pointer(event)}
+                self.gesture = {'mode': 'ELLIPSE' if self.tool == 'ELLIPSE' else 'RECT', 'start': self.world_pointer(event, geometry=self.tool != 'PIN_BOX')}
             elif self.tool == 'PLACE':
                 selected, corner = self.hit()
                 if selected:
@@ -1422,8 +1612,10 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         rects = {}
         if panel.w < 200 * s:
             return rects
-        s = min(s, (panel.w - 24 * s) / 186)
-        strip_w = min(panel.w - 24 * s, 186 * s)
+        live_brush = self.shaping is not None and self.shaping.live_brush
+        units = 302 if live_brush else 186
+        s = min(s, (panel.w - 24 * s) / units)
+        strip_w = min(panel.w - 24 * s, units * s)
         strip_x = round(panel.x + (panel.w - strip_w) / 2)
         strip_y = round(panel.y + panel.h - 44 * s)
         rects['STRIP_BOUNDS'] = Rect(strip_x, strip_y, strip_w, 36 * s)
@@ -1433,6 +1625,11 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         value_w = round(60 * s)
         rects['RADIUS_VALUE'] = Rect(minus_x + btn_w + 2 * s, strip_y + 4 * s, value_w, 28 * s)
         rects['RADIUS_PLUS'] = Rect(minus_x + btn_w + value_w + 4 * s, strip_y + 4 * s, btn_w, 28 * s)
+        if live_brush:
+            weaker_x = minus_x + 2 * btn_w + value_w + 10 * s
+            rects['STRENGTH_MINUS'] = Rect(weaker_x, strip_y + 4 * s, btn_w, 28 * s)
+            rects['STRENGTH_VALUE'] = Rect(weaker_x + btn_w + 2 * s, strip_y + 4 * s, value_w, 28 * s)
+            rects['STRENGTH_PLUS'] = Rect(weaker_x + btn_w + value_w + 4 * s, strip_y + 4 * s, btn_w, 28 * s)
         return rects
 
     def enable_shaping(self, context):
@@ -1441,20 +1638,38 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         simulations = garment.generated(context.scene, 'simulation')
         if not simulations or simulations[0].hide_get():
             raise ValueError('Start a drape before grabbing it.')
+        from . import xpbd
+        if not xpbd.current(simulations[0]):
+            raise ValueError('This drape comes from an older version. Press Simulate once, then grab it.')
         if self.shaping is None or self.shaping.source != simulations[0]:
-            self.shaping = ClothGrab(simulations[0])
+            self.shaping = ClothGrab(simulations[0], on_change=self.record_pin_change)
         if not self.choose_tool('SHAPE'):
             return
+        self.shaping.arm()
         if self.full:
             self.reveal_3d()
         self.card_kind = None
         self._window.cursor_modal_set('HAND')
         self.shape_cursor = 'HAND'
-        self.message = 'Drag the cloth while it simulates. Ctrl+wheel changes radius. Release to let it fall back.'
+        self.message = 'Drag the cloth while it simulates. W pins it where you hold it. Ctrl+wheel changes radius.'
+
+    def record_pin_change(self, before):
+        self.session.push_step(before)
+        self._scene.dd_history = history.store(self.session)
+
+    def apply_pin_step(self, step):
+        from . import garment, xpbd_live
+        simulations = garment.generated(self._scene, 'simulation')
+        if not simulations or self.shaping is not None and self.shaping.source == simulations[0] and (self.shaping.held or self.shaping.brushing):
+            return None
+        return xpbd_live.restore_pins(simulations[0], step)
 
     def end_shaping(self):
         if self.shaping is not None:
-            self.shaping.release()
+            if self.shaping.alive:
+                self.shaping.end_stroke(bpy.context)
+                self.shaping.release(bpy.context)
+            self.shaping.disarm()
         if self.shape_cursor is not None:
             self._window.cursor_modal_restore()
         self.shape_cursor = None
@@ -1480,20 +1695,46 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             return {'RUNNING_MODAL'}
         if (press and event.type == 'LEFTMOUSE' and canvas and not self.canvas_layout.rail.contains(*self.pointer)
                 and not any(card[0].contains(*self.pointer) for card in self.visible_cards())):
-            self.trace_drag = dict(start=self.view.world(self.pointer, self.canvas_layout.canvas),
-                                   origin=(scene.dd_trace_x, scene.dd_trace_y))
+            frame = self.trace_frame()
+            self.trace_drag = dict(handle=self.trace_frame_hit(frame) if frame else 'MOVE', pointer=self.pointer,
+                                   center=frame['center'] if frame else self.pointer,
+                                   start=self.view.world(self.pointer, self.canvas_layout.canvas),
+                                   origin=(scene.dd_trace_x, scene.dd_trace_y), width=scene.dd_trace_width,
+                                   rotation=scene.dd_trace_rotation)
             return {'RUNNING_MODAL'}
         if isinstance(self.trace_drag, dict):
             if event.type == 'MOUSEMOVE':
-                point = self.view.world(self.pointer, self.canvas_layout.canvas)
-                scene.dd_trace_x = self.trace_drag['origin'][0] + point[0] - self.trace_drag['start'][0]
-                scene.dd_trace_y = self.trace_drag['origin'][1] + point[1] - self.trace_drag['start'][1]
+                self.place_reference(event)
                 return {'RUNNING_MODAL'}
             if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+                done = {'ROTATE': 'Image rotated', 'SCALE': 'Image scaled'}.get(self.trace_drag['handle'], 'Image moved')
                 self.trace_drag = 'ARMED'
-                self.message = 'Image moved. Drag again, or press Escape to finish.'
+                self.message = done + '. Drag the image, a corner or the knob again, or press Escape to finish.'
                 return {'RUNNING_MODAL'}
         return None
+
+    def place_reference(self, event):
+        from . import tracing
+        scene = self._scene
+        drag = self.trace_drag
+        if drag['handle'] == 'ROTATE':
+            scene.dd_trace_rotation = tracing.turned(drag['rotation'], drag['center'], drag['pointer'], self.pointer, 15.0 if event.shift else 0.0)
+        elif drag['handle'] == 'SCALE':
+            reach = math.dist(drag['pointer'], drag['center'])
+            if reach < 1e-6:
+                return
+            try:
+                size = tracing.load_image(scene.dd_trace_path).size[:]
+                width, origin = tracing.scaled_about_center(drag['width'], size, drag['origin'], math.dist(self.pointer, drag['center']) / reach)
+            except (ValueError, ReferenceError) as error:
+                self.message = str(error)
+                return
+            scene.dd_trace_width = width
+            scene.dd_trace_x, scene.dd_trace_y = origin
+        else:
+            point = self.view.world(self.pointer, self.canvas_layout.canvas)
+            scene.dd_trace_x = drag['origin'][0] + point[0] - drag['start'][0]
+            scene.dd_trace_y = drag['origin'][1] + point[1] - drag['start'][1]
 
     def shortcut_belongs_to_blender(self, event, panel):
         if panel or self.tool in {'SHAPE', 'PEN'} or self.pen_mode or event.type == 'NONE' or any(token in event.type for token in NON_KEYBOARD_TOKENS):
@@ -1537,13 +1778,28 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                 if grab is not None:
                     grab.view_changed()
                 return {'PASS_THROUGH'}
-            if not grab.held:
+            if event.shift and grab.live_brush:
+                grab.scale_strength(RADIUS_STEP if event.type == 'WHEELUPMOUSE' else 1 / RADIUS_STEP)
+                self.message = f'Brush strength {grab.strength * 100:.0f}%'
+                self.overlay_cache_time = 0.0
+            elif not grab.held:
                 grab.scale_radius(RADIUS_STEP if event.type == 'WHEELUPMOUSE' else 1 / RADIUS_STEP)
                 self.message = f'Grab radius {grab.radius * 1000:.0f} mm'
                 self.overlay_cache_time = 0.0
             return {'RUNNING_MODAL'}
-        if self.card_kind and not grab.held:
+        if self.card_kind and not grab.held and not grab.brushing:
             return self.minimal_event(context, event) or {'RUNNING_MODAL'}
+        if grab.brushing:
+            if event.type == 'MOUSEMOVE':
+                grab.stroke_to(context, *self.pointer_ray())
+                return {'RUNNING_MODAL'}
+            if press and event.type == 'W':
+                self.message = 'Pinned under the brush. Keep dragging to shape around it.' if grab.pin_stroke(context) else 'That cloth is already held by a pattern pin, tack or freeze.'
+                return {'RUNNING_MODAL'}
+            if press and event.type == 'ESC' or event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+                grab.end_stroke(context)
+                self.message = 'Stroke finished. The cloth keeps the fold it can hold. W while dragging pins it.'
+                return {'RUNNING_MODAL'}
         if press and event.type == 'SPACE':
             if self.pending_strokes:
                 self.apply_strokes(context, grab)
@@ -1552,9 +1808,15 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             else:
                 garment.start_playback(context)
             return {'RUNNING_MODAL'}
+        if press and event.ctrl and event.type in {'Z', 'Y'}:
+            if grab.held or grab.brushing:
+                self.message = 'Let go of the cloth before undoing.'
+            else:
+                self.perform_action('REDO' if event.type == 'Y' or event.shift else 'UNDO')
+            return {'RUNNING_MODAL'}
         if press and event.type == 'ESC':
             if grab.held:
-                grab.release()
+                grab.release(context)
                 self._window.cursor_modal_set('HAND')
                 self.shape_cursor = 'HAND'
             else:
@@ -1564,14 +1826,14 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             self.choose_tool({'V': 'SELECT', 'P': 'POLYGON', 'R': 'RECTANGLE', 'E': 'ELLIPSE', 'I': 'INTERNAL', 'D': 'DART',
                               'J': 'SEW', 'K': 'PIN', 'T': 'TACK', 'N': 'KNIFE'}[event.type])
             return {'RUNNING_MODAL'}
-        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and grab.held and grab.mode == 'PIN':
+        if grab.held and (press and event.type == 'W' or event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and grab.mode == 'PIN'):
             self.pin_grabbed(context, grab)
             return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and grab.held:
-            grab.release()
+            grab.release(context)
             self._window.cursor_modal_set('HAND')
             self.shape_cursor = 'HAND'
-            self.message = 'Released. The cloth keeps simulating from where you left it.'
+            self.message = 'Released. The cloth settles from where you left it. Press W while holding to pin it instead.'
             return {'RUNNING_MODAL'}
         if event.type == 'MOUSEMOVE' and grab.held:
             grab.drag(*self.pointer_ray())
@@ -1594,6 +1856,12 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
                 elif strip['RADIUS_PLUS'].contains(*self.pointer):
                     grab.scale_radius(RADIUS_STEP)
                     self.message = f'Grab radius {grab.radius * 1000:.0f} mm'
+                elif 'STRENGTH_MINUS' in strip and strip['STRENGTH_MINUS'].contains(*self.pointer):
+                    grab.scale_strength(1 / RADIUS_STEP)
+                    self.message = f'Brush strength {grab.strength * 100:.0f}%'
+                elif 'STRENGTH_PLUS' in strip and strip['STRENGTH_PLUS'].contains(*self.pointer):
+                    grab.scale_strength(RADIUS_STEP)
+                    self.message = f'Brush strength {grab.strength * 100:.0f}%'
                 self.overlay_cache_time = 0.0
                 return {'RUNNING_MODAL'}
             origin, direction = self.pointer_ray()
@@ -1601,9 +1869,19 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             if hit is None:
                 self.message = 'Press on the cloth to grab it.'
                 return {'RUNNING_MODAL'}
+            if event.ctrl:
+                self.message = 'Pin removed.' if grab.unpin_near(context, hit[0]) else 'No pin under the ring. Ctrl+click a pinned spot to free it.'
+                return {'RUNNING_MODAL'}
+            if grab.live_brush:
+                grab.begin_stroke(context, hit[0], hit[1])
+                garment.start_playback(context)
+                return {'RUNNING_MODAL'}
             if grab.mode in {'PINCH', 'STEAM'}:
                 self.brush_stretch = event.shift
                 self.brush_cloth(grab, hit[0], hit[1], event.shift)
+                return {'RUNNING_MODAL'}
+            if grab.locked(hit[0]):
+                self.message = 'This cloth is held by a pattern pin, a tack or a frozen piece, so it cannot be dragged.'
                 return {'RUNNING_MODAL'}
             grab.begin(context, hit[0], hit[1], hit[2], direction)
             self._window.cursor_modal_set('HAND_CLOSED')
@@ -1617,14 +1895,38 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         return None
 
     def pin_grabbed(self, context, grab):
-        try:
-            identity, placed = self.cloth_point(grab.source, grab.vertex)
-        except ValueError as failure:
-            grab.release()
-            self.message = str(failure)
-            return
-        self.run_edit(lambda: self.session.add_pins([(identity, *placed)]), 'Cloth pinned.')
-        self.redrape_in_grab(context, 'PIN', grab.radius)
+        pinned = grab.pin(context)
+        self._window.cursor_modal_set('HAND')
+        self.shape_cursor = 'HAND'
+        self.message = 'Pinned here. Drag it to move it. Ctrl+click frees it.' if pinned else 'That cloth is already held by a pattern pin, tack or freeze.'
+
+    def cloth_pin_pixels(self):
+        from . import garment
+        simulations = garment.generated(self._scene, 'simulation')
+        if self.full or not simulations or not simulations[0].visible_get():
+            return []
+        from bpy_extras import view3d_utils
+        from .xpbd_live import pinned_world
+        view = self._area.spaces.active.region_3d
+        bounds = self.shaping_view_bounds()
+        body = self._scene.dd_avatar
+        evaluated = body.evaluated_get(bpy.context.evaluated_depsgraph_get()) if body is not None and body.type == 'MESH' else None
+        inverse = evaluated.matrix_world.inverted_safe() if evaluated is not None else None
+        pins = []
+        for point in pinned_world(simulations[0]):
+            pixel = view3d_utils.location_3d_to_region_2d(self._region, view, point)
+            if pixel is None or not bounds.contains(*pixel):
+                continue
+            hidden = False
+            if evaluated is not None:
+                eye = view3d_utils.region_2d_to_origin_3d(self._region, view, pixel)
+                start, end = inverse @ eye, inverse @ point
+                reach = (end - start).length
+                if reach > 1e-9:
+                    margin = reach * PIN_DEPTH_MARGIN / max(1e-9, (point - eye).length)
+                    hidden = evaluated.ray_cast(start, end - start, distance=max(0.0, reach - margin))[0]
+            pins.append((tuple(pixel), not hidden))
+        return pins
 
     def brush_cloth(self, grab, vertex, world, stretch):
         try:
@@ -1764,6 +2066,7 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
         if self._closed:
             return
         self.end_shaping()
+        self.release_timeline()
         self.cancel_pending_sub()
         self.avatar_field.close()
         self.avatar_field.release_surface()
@@ -1787,6 +2090,18 @@ class DD_OT_pattern_editor(MinimalCards, DesignTools, OverlayControls, bpy.types
             pass
         if _active is self:
             _active = None
+
+    def release_timeline(self):
+        from . import garment
+        screen = bpy.context.screen
+        try:
+            if (screen is not None and screen.is_animation_playing
+                    and ('dd_timeline' in self._scene or garment.generated(self._scene, 'simulation'))):
+                garment.stop(bpy.context)
+            if screen is None or not screen.is_animation_playing:
+                garment.restore_timeline(self._scene)
+        except ReferenceError:
+            pass
 
     def cancel(self, context):
         self.cleanup()

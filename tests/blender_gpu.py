@@ -90,7 +90,7 @@ handle = xpbd.input_slot(simulation, 'Grab Handle').value
 handle.location.z += 0.1
 run_frames(scene, 10)
 check(float(points(simulation)[index][2]) - grab_z >= .05, 'grabbed cloth rises with the handle')
-grab.release()
+grab.release(bpy.context)
 run_frames(scene, 30)
 _, open_pairs = garment.keep_drape(bpy.context)
 check(open_pairs == 0, 'Keep welds every seam pair of the GPU drape')

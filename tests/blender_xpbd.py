@@ -2,10 +2,11 @@ import json
 import math
 from pathlib import Path
 import sys
+import time
 
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
@@ -83,8 +84,31 @@ def test_groups_and_modifier(scene):
     check(not simulation.use_simulation_cache, 'simulation runs in realtime mode with no frame cache')
     check({'dd_seam', 'rest_length', 'mass', 'dd_bend_rest', 'dd_partner'} <= set(simulation.data.attributes.keys()), 'compile writes solver attributes')
     kinds = {obj.name.split('.')[0] for obj in garment.generated(scene, 'collider')}
-    check({'DD Collision Body', 'DD Collision Shell'} <= kinds, 'collision body and watertight shell are baked')
+    check({'DD Collision Body', 'DD Collision Shell', 'DD Collision Proxy'} <= kinds, 'collision body, contact proxy and watertight shell are baked')
     return simulation
+
+
+def test_fabric_air_damping(scene, body):
+    fresh(scene)
+    scene.dd_avatar = body
+    session = Session()
+    session.add([(-.2, 0), (0, 0), (0, .3), (-.2, .3)])
+    session.add([(.05, 0), (.25, 0), (.25, .3), (.05, .3)])
+    first, second = session.document.patterns
+    first.preset, second.preset = 'SILK', 'DENIM'
+    for pattern in (first, second):
+        pattern.placement_mode = 'LEGACY'
+    scene.dd_document = session.document.dumps()
+    simulation = garment.compile_garment(bpy.context)
+    damping = np.array([item.value for item in simulation.data.attributes['dd_damping'].data])
+    silk, denim = int((np.abs(damping - 2.0) < 1e-6).sum()), int((np.abs(damping - 1.0) < 1e-6).sum())
+    check(silk and denim and silk + denim == len(damping) and abs(silk - denim) < .2 * len(damping),
+          'silk and denim pieces of one garment carry their own air damping')
+    tree = simulation.modifiers['DD XPBD'].node_group
+    check(not any(item.item_type == 'SOCKET' and item.name == 'Damping' for item in tree.interface.items_tree),
+          'damping comes from the cloth, not one shared modifier value')
+    run_frames(scene, 20)
+    check(np.isfinite(points(simulation)).all(), 'mixed-damping cloth simulates to finite positions')
 
 
 def test_open_avatar_collision(scene):
@@ -136,22 +160,82 @@ def test_live_grab(scene):
     coordinates = points(simulation)
     index = max(range(len(coordinates)), key=lambda item: -coordinates[item][1] - abs(coordinates[item][2] - 1.2))
     start = Vector(coordinates[index].tolist())
-    grab = xpbd_live.ClothGrab(simulation)
+    pin_steps = []
+    grab = xpbd_live.ClothGrab(simulation, on_change=pin_steps.append)
     grab.radius = .9
     grab.scale_radius(2)
     check(abs(grab.radius - xpbd_live.RADIUS_RANGE[1]) < 1e-9, 'grab radius is limited to its range')
     grab.radius = .05
-    grab.begin(bpy.context, index, start, Vector((0, -1, 0)), Vector((0, 1, 0)))
+    grab.arm()
+    check(xpbd.input_slot(simulation, 'Inner Substeps').value <= xpbd.LIVE_SUBSTEPS, 'the Grab tool sets live substeps once')
+    steps = xpbd.input_slot(simulation, 'Inner Substeps').value
+    grab.begin(bpy.context, index, start + Vector((.004, 0, .004)), Vector((0, -1, 0)), Vector((0, 1, 0)))
     check(grab.held and xpbd.input_slot(simulation, 'Grab Index').value == index, 'grab reaches the solver')
+    check(xpbd.input_slot(simulation, 'Inner Substeps').value == steps, 'pressing does not change the solver substeps')
+    check((xpbd.input_slot(simulation, 'Grab Handle').value.location - start).length < 1e-5, 'pressing beside a cloth point does not pull it')
+    grab.drag(start + Vector((.004, -2, .004)), Vector((0, 1, 0)))
+    check((xpbd.input_slot(simulation, 'Grab Handle').value.location - start).length < 1e-5, 'a still hand keeps the cloth still')
     target = start + Vector((.06, 0, .06))
     grab.drag(target + Vector((0, -2, 0)), Vector((0, 1, 0)))
     run_frames(scene, 25)
     moved = Vector(points(simulation)[index].tolist())
     check((moved - start).length > .03, 'pulled cloth follows the hand')
-    grab.release()
-    check(not grab.held and xpbd.input_slot(simulation, 'Grab Index').value == -1, 'release hands the cloth back to the solver')
-    run_frames(scene, 20)
+    grab.release(bpy.context)
+    check(not grab.held and xpbd.input_slot(simulation, 'Grab Release').value >= 0, 'release starts easing the hand out')
+    window = math.ceil(math.log(xpbd_nodes.GRAB_EASE_END / xpbd_nodes.GRAB_EASE_START) / xpbd_nodes.GRAB_EASE_RATE * scene.render.fps) + 6
+    last = points(simulation).copy()
+    hand_steps, cloth_steps = [], []
+    for _ in range(window):
+        run_frames(scene, 1)
+        now = points(simulation).copy()
+        travel = np.linalg.norm(now - last, axis=1)
+        hand_steps.append(float(travel[index]))
+        cloth_steps.append(float(travel.max()))
+        last = now
+    print('RELEASE HAND MM', ' '.join(f'{step * 1000:.2f}' for step in hand_steps), flush=True)
+    print('RELEASE CLOTH MM', ' '.join(f'{step * 1000:.2f}' for step in cloth_steps), flush=True)
+    check(max(hand_steps) < .008, 'released cloth never jumps under the hand on any frame of the ease')
+    check(max(abs(second - first) for first, second in zip(hand_steps, hand_steps[1:])) < .003, 'no frame of the release stands out against its neighbours')
+    check(max(cloth_steps) < .015, 'no part of the cloth snaps on any frame of the release')
+    check((Vector(last[index].tolist()) - moved).length > .02, 'released cloth does return instead of staying frozen')
     check(all(math.isfinite(value) for value in points(simulation).ravel()), 'cloth keeps simulating after release')
+    grab.begin(bpy.context, index, Vector(points(simulation)[index].tolist()), Vector((0, -1, 0)), Vector((0, 1, 0)))
+    grab.drag(target + Vector((0, -2, 0)), Vector((0, 1, 0)))
+    run_frames(scene, 25)
+    pinned = grab.pin(bpy.context)
+    spot = points(simulation)[index].copy()
+    check(pinned > 0 and not grab.held and xpbd.input_slot(simulation, 'Grab Index').value == -1, 'pinning while held keeps the cloth and frees the hand')
+    check(len(xpbd_live.pinned_world(simulation)) == pinned, 'cloth pins are listed for display')
+    run_frames(scene, 30)
+    check(math.dist(points(simulation)[index], spot) < 1e-4, 'a cloth pin holds the cloth where it was dragged')
+    grab.begin(bpy.context, index, Vector(spot.tolist()), Vector((0, -1, 0)), Vector((0, 1, 0)))
+    check(len(xpbd_live.pinned_vertices(simulation)) == 0, 'grabbing a pinned spot lifts its pins')
+    grab.drag(target + Vector((.04, -2, 0)), Vector((0, 1, 0)))
+    run_frames(scene, 20)
+    grab.release(bpy.context)
+    carried = points(simulation)[index].copy()
+    check(len(xpbd_live.pinned_vertices(simulation)) == pinned and math.dist(carried, spot) > .01, 'a dragged pin stays where it is dropped')
+    records = xpbd_live.pin_records(simulation)
+    check(sum(len(items) for items in records.values()) == pinned, 'cloth pins are recorded for the next drape')
+    check(xpbd_live.ClothGrab(simulation).unpin_all() == pinned, 'all cloth pins can be removed')
+    xpbd_live.carry_pins(simulation, records)
+    check(len(xpbd_live.pinned_vertices(simulation)) == pinned, 'recorded cloth pins return on the same cloth')
+    grab.radius = .05
+    check(grab.unpin_near(bpy.context, index) == pinned, 'pins under the ring can be removed')
+    run_frames(scene, 20)
+    check(math.dist(points(simulation)[index], carried) > .002, 'unpinned cloth drapes again')
+    redo = xpbd_live.restore_pins(simulation, pin_steps.pop())
+    check(redo is not None and len(xpbd_live.pinned_vertices(simulation)) == pinned, 'undo brings removed cloth pins back')
+    undo = xpbd_live.restore_pins(simulation, redo)
+    check(undo is not None and len(xpbd_live.pinned_vertices(simulation)) == 0, 'redo removes the restored cloth pins again')
+    check(xpbd_live.restore_pins(simulation, undo) is not None and len(xpbd_live.pinned_vertices(simulation)) == pinned, 'undo after redo brings them back')
+    stale = xpbd_live.PinStep('another drape', undo.held, undo.targets)
+    check(xpbd_live.restore_pins(simulation, stale) is None and len(xpbd_live.pinned_vertices(simulation)) == pinned, 'a pin step from another drape is refused and changes nothing')
+    run_frames(scene, 2)
+    check(math.dist(points(simulation)[index], simulation.data.vertices[index].co) < 1e-4, 'restored pins return the cloth to its pinned place')
+    check(grab.unpin_near(bpy.context, index) == pinned, 'restored pins can be removed again')
+    grab.disarm()
+    check(xpbd.input_slot(simulation, 'Inner Substeps').value == xpbd.LIVE_SUBSTEPS, 'leaving the Grab tool restores the substeps')
     grab = xpbd_live.ClothGrab(simulation)
     grab.mode = xpbd_live.PUSH
     press = Vector(points(simulation)[index].tolist())
@@ -159,7 +243,7 @@ def test_live_grab(scene):
     grab.drag(press + Vector((.05, -2, 0)), Vector((0, 1, 0)))
     handle = xpbd.input_slot(simulation, 'Grab Handle').value.location
     check(handle.y > press.y + .03, 'Push moves the hand into the cloth along its surface normal')
-    grab.release()
+    grab.release(bpy.context)
 
 
 def test_keep_refine_and_guard(scene, body):
@@ -173,6 +257,7 @@ def test_keep_refine_and_guard(scene, body):
     print('STRETCH', round(live_stretch, 4), round(refined_stretch, 4), flush=True)
     check(refined_stretch < live_stretch, 'Keep refine reduces stretch')
     check(xpbd.input_slot(simulation, 'Inner Substeps').value == live_steps, 'refine restores live substeps')
+    check(xpbd.input_slot(simulation, 'Iterations').value < xpbd.REFINE_ITERATIONS, 'refine restores live solver iterations')
     original = [vertex.co.copy() for vertex in body.data.vertices]
     for vertex in body.data.vertices:
         vertex.co += vertex.normal * .03
@@ -230,6 +315,25 @@ def test_stiff_fabric_links():
     check(not len(xpbd.bend_links(rest, edges, np.zeros(len(rest), dtype=bool))), 'soft fabrics get no extra links')
 
 
+def test_seam_bridges():
+    side, step = 5, .02
+    grid = [(x * step, y * step) for y in range(side) for x in range(side)]
+    edges = [(y * side + x, y * side + x + 1) for y in range(side) for x in range(side - 1)]
+    edges += [(y * side + x, (y + 1) * side + x) for y in range(side - 1) for x in range(side)]
+    for same_side in (False, True):
+        other = [(x + 100.0, y) for x, y in grid]
+        rest = np.array([(x, y, 0.0) for x, y in grid + other])
+        seam_column = side - 1 if same_side else 0
+        seams = [(y * side + side - 1, side * side + y * side + seam_column) for y in range(side)]
+        cloth = np.array(edges + [(first + side * side, second + side * side) for first, second in edges])
+        all_edges = np.concatenate((cloth, np.array(seams)))
+        loose = np.arange(len(all_edges)) >= len(cloth)
+        links, lengths = xpbd.seam_links(rest, all_edges, loose)
+        crossing = (links < side * side).sum(axis=1) == 1
+        check(crossing.any() and np.allclose(lengths[crossing], 2 * step), 'seam bridges span the seam at the unfolded cloth length' + (' when both panels are sewn on the same side' if same_side else ''))
+    check(not len(xpbd.seam_links(rest, cloth, np.zeros(len(cloth), dtype=bool))[0]), 'unsewn panels get no seam bridges')
+
+
 def test_fell_off_guard(scene, body):
     try:
         body_guard.check(bpy.context, [body], np.array([(0, 0, -30.0), (0, 0, -30.5)]), 1)
@@ -277,6 +381,163 @@ def test_reset_restores_timeline(scene):
     check(not garment.generated(scene, 'collider') and not garment.generated(scene, 'simulation'), 'Reset clears generated simulation objects')
 
 
+def torso(segments, rings):
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=segments, ring_count=rings, radius=1.0, location=(0, 0, 1.0))
+    body = bpy.context.object
+    body.scale = (.16, .13, .6)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return body
+
+
+def wrapped_tube(scene, body):
+    fresh(scene)
+    scene.dd_avatar = body
+    session = Session()
+    for _ in range(3):
+        session.add([(-.1, 0), (.1, 0), (.1, .65), (-.1, .65)])
+        session.document.patterns[-1].placement_mode = 'LEGACY'
+    patterns = session.document.patterns
+    for left, right in ((0, 1), (1, 2)):
+        session.sew_chains([session.document.edge(patterns[left].id, 1)], [session.document.edge(patterns[right].id, 3)])
+    scene.dd_document = session.document.dumps()
+    panels = {panel['dd_pattern_id']: panel for panel in garment.build_panels(bpy.context)}
+    for side, pattern in enumerate(patterns):
+        angle = 2 * math.pi * side / 6
+        panels[pattern.id].location = (.1732 * math.cos(angle), .1732 * math.sin(angle), .65)
+        panels[pattern.id].rotation_euler = (math.pi / 2, 0, angle + math.pi / 2)
+    bpy.context.view_layer.update()
+    return garment.compile_garment(bpy.context)
+
+
+def median_frame_ms(scene, warmup, frames):
+    run_frames(scene, warmup)
+    timings = []
+    for _ in range(frames):
+        started = time.perf_counter()
+        run_frames(scene, 1)
+        timings.append((time.perf_counter() - started) * 1000.0)
+    return float(np.median(timings))
+
+
+def proxy_triangles(simulation):
+    proxy = xpbd.input_slot(simulation, 'Body Proxy').value
+    proxy.data.calc_loop_triangles()
+    return len(proxy.data.loop_triangles)
+
+
+def test_dense_body_costs_like_a_light_one(scene):
+    pin_top = scene.dd_pin_top
+    scene.dd_pin_top = True
+    costs, sizes = {}, {}
+    for name, segments, rings in (('dense', 256, 138), ('light', 24, 16)):
+        body = torso(segments, rings)
+        simulation = wrapped_tube(scene, body)
+        costs[name] = median_frame_ms(scene, 20, 40)
+        sizes[name] = proxy_triangles(simulation)
+        fresh(scene)
+        bpy.data.objects.remove(body, do_unlink=True)
+    scene.dd_pin_top = pin_top
+    print('BODY DENSITY MS', round(costs['dense'], 2), round(costs['light'], 2), flush=True)
+    check(costs['dense'] - costs['light'] < 3.0, 'a 70k-triangle body costs within 3 ms per frame of a 720-triangle body')
+    check(max(sizes.values()) <= xpbd.PROXY_TRIANGLES, 'every body gets a contact proxy of bounded size')
+
+
+SHELL_CEILING = 10000
+
+
+def shell_offset_mm(context, body):
+    collider = xpbd.bake_collider(context)
+    shell = xpbd.bake_shell(context, collider)
+    count = xpbd.triangle_count(shell.data)
+    solid = collider.modifiers.new('Reference Solid', 'SOLIDIFY')
+    solid.thickness, solid.offset = xpbd.SHELL_THICKNESS, -1
+    voxel = collider.modifiers.new('Reference Shell', 'REMESH')
+    voxel.mode, voxel.voxel_size = 'VOXEL', xpbd.SHELL_VOXEL
+    reference = xpbd.evaluated_mesh(context, collider)
+    apart = max(xpbd.deviation(reference, shell.data), xpbd.deviation(shell.data, reference))
+    garment.remove_objects([collider, shell])
+    bpy.data.meshes.remove(reference)
+    return count, apart * 1000
+
+
+def test_shell_size_is_bounded(scene):
+    avatar = scene.dd_avatar
+    for name, segments, rings in (('dense torso', 256, 138), ('demo avatar', 0, 0)):
+        body = torso(segments, rings) if segments else avatar
+        scene.dd_avatar = body
+        count, apart = shell_offset_mm(bpy.context, body)
+        print('SHELL', name, count, round(apart, 3), flush=True)
+        check(count <= SHELL_CEILING, f'the {name} collision shell stays under {SHELL_CEILING} triangles whatever the avatar size')
+        check(apart < 1.5, f'the bounded {name} shell stays within 1.5 mm of the voxel shell')
+        if segments:
+            bpy.data.objects.remove(body, do_unlink=True)
+    scene.dd_avatar = avatar
+
+
+def test_oversized_body_bakes_without_stalling(scene):
+    avatar = scene.dd_avatar
+    collider = xpbd.bake_collider(bpy.context)
+    check(xpbd.shell_coarsening(collider.data, 1.0) == 1.0, 'a body of normal size keeps the full shell detail')
+    collider.data.transform(Matrix.Scale(16, 4))
+    started = time.perf_counter()
+    shell = xpbd.bake_shell(bpy.context, collider)
+    spent = time.perf_counter() - started
+    print('OVERSIZED SHELL S', round(spent, 2), flush=True)
+    check(spent < 15, f'a body 16 times too large bakes its collision shell in {spent:.1f} s instead of stalling')
+    check(0 < xpbd.triangle_count(shell.data) <= SHELL_CEILING, 'the oversized body still gets a bounded collision shell')
+    check(max(shell.dimensions) > max(avatar.dimensions) * 12, 'the oversized shell still wraps the whole body')
+    garment.remove_objects([collider, shell])
+
+
+def drape_with_self_collision(scene, enabled):
+    scene.dd_self_collision = enabled
+    body = torso(24, 16)
+    simulation = wrapped_tube(scene, body)
+    run_frames(scene, 10)
+    started = time.perf_counter()
+    run_frames(scene, 40)
+    spent = time.perf_counter() - started
+    drape = points(simulation).copy()
+    fresh(scene)
+    bpy.data.objects.remove(body, do_unlink=True)
+    return spent, drape
+
+
+def test_self_collision_off_skips_self_contact(scene):
+    pin_top, enabled = scene.dd_pin_top, scene.dd_self_collision
+    scene.dd_pin_top = True
+    drape_with_self_collision(scene, True)
+    with_self, _ = drape_with_self_collision(scene, True)
+    without_self, drape = drape_with_self_collision(scene, False)
+    scene.dd_pin_top, scene.dd_self_collision = pin_top, enabled
+    print('SELF CONTACT MS', round(with_self * 1000, 1), round(without_self * 1000, 1), flush=True)
+    check(without_self < with_self * .94, 'turning self collision off makes the live drape cheaper')
+    check(np.isfinite(drape).all() and float(drape[:, 2].min()) > .3, 'cloth without self collision still drapes on the body')
+
+
+def test_contact_gate_matches_exact_contact(scene):
+    pin_top = scene.dd_pin_top
+    scene.dd_pin_top = True
+    body = torso(256, 138)
+    simulation = wrapped_tube(scene, body)
+    gate = np.empty(len(simulation.data.vertices), dtype=np.float32)
+    simulation.data.attributes['dd_body_gate'].data.foreach_get('value', gate)
+    drapes = []
+    for value in (gate, np.full(len(gate), 1.0e9, dtype=np.float32)):
+        xpbd.write(simulation.data, 'dd_body_gate', 'FLOAT', 'POINT', value)
+        simulation.update_tag()
+        scene.frame_set(scene.frame_start)
+        run_frames(scene, 60)
+        drapes.append(points(simulation).copy())
+    scene.dd_pin_top = pin_top
+    apart = float(np.linalg.norm(drapes[0] - drapes[1], axis=1).max())
+    print('GATED VS EXACT MM', round(apart * 1000, 4), flush=True)
+    check(apart < 1e-4, 'the contact proxy gate drapes exactly like the full body query')
+    check(float(drapes[0][:, 2].min()) > .3, 'the gated drape still rests on the dense body')
+    fresh(scene)
+    bpy.data.objects.remove(body, do_unlink=True)
+
+
 devil_designer.register()
 scene = bpy.context.scene
 scene.dd_spacing = .025
@@ -292,10 +553,17 @@ test_live_grab(scene)
 test_keep_refine_and_guard(scene, body)
 test_keep_with_faceless_seam_vertices(scene)
 test_stiff_fabric_links()
+test_seam_bridges()
 test_fell_off_guard(scene, body)
 test_reset_restores_timeline(scene)
+test_fabric_air_damping(scene, body)
 test_open_avatar_collision(scene)
 test_paired_panels_stay_on_their_side(scene, body)
 test_pins_and_tacks(scene, body)
+test_shell_size_is_bounded(scene)
+test_oversized_body_bakes_without_stalling(scene)
+test_self_collision_off_skips_self_contact(scene)
+test_contact_gate_matches_exact_contact(scene)
+test_dense_body_costs_like_a_light_one(scene)
 devil_designer.unregister()
 print('ALL XPBD CHECKS PASSED', flush=True)

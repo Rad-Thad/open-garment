@@ -9,14 +9,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT))
-from tools.workspace import SCRATCH, blender_path, clean_scratch, extension_archive, prepare_scratch
+from tools.workspace import SCRATCH, blender_path, child_environment, clean_scratch, extension_archive, prepare_scratch
 
 def run_cmd(cmd, cwd=str(ROOT), desc="", env=None):
     if desc:
         print(f"--> {desc}...")
     t0 = time.time()
-    temporary = str(SCRATCH / 'tmp') + os.sep
-    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', DD_SOLVER='NODES', TMPDIR=temporary, TEMP=temporary, TMP=temporary)
+    environment = dict(child_environment(), DD_SOLVER='NODES')
     if env:
         environment.update(env)
     res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=environment)
@@ -46,7 +45,7 @@ def do_tests():
 
     print("\n=== RUNNING REAL-BLENDER BACKGROUND & LOAD SMOKE SUITES ===")
     for t in ["blender_smoke.py", "blender_garment.py", "blender_advanced.py", "blender_silhouette.py",
-              "blender_density.py", "blender_arrangement.py", "blender_tack_binding.py", "blender_tracing.py", "blender_layering.py", "blender_piece_states.py", "blender_sewing_preview.py", "blender_xpbd.py", "blender_matrix.py", "blender_production.py"]:
+              "blender_density.py", "blender_arrangement.py", "blender_tack_binding.py", "blender_tracing.py", "blender_layering.py", "blender_piece_states.py", "blender_sewing_preview.py", "blender_xpbd.py", "blender_matrix.py", "blender_torso.py", "blender_production.py"]:
         if not run_cmd([blender_path(), "--background", "--factory-startup", "--python-exit-code", "1", "--python", f"tests/{t}"],
                        desc=f"Blender Background: {t}"):
             return False
@@ -61,7 +60,7 @@ def do_tests():
         return False
 
     print("\n=== RUNNING REAL-BLENDER IN-ENGINE GUI SUITES ===")
-    for t in ["gui_preview", "gui_silhouette", "gui_design", "gui_fast_flow", "gui_library", "gui_arrangement", "gui_arrangement_display", "gui_fit_map", "gui_avatar_field", "gui_viewport_sewing", "gui_core_workflow", "gui_editor_release", "gui_live_grab", "gui_matrix"]:
+    for t in ["gui_preview", "gui_silhouette", "gui_design", "gui_fast_flow", "gui_library", "gui_arrangement", "gui_arrangement_display", "gui_fit_map", "gui_avatar_field", "gui_viewport_sewing", "gui_core_workflow", "gui_editor_release", "gui_timeline_release", "gui_live_grab", "gui_live_brush", "gui_matrix", "gui_drafting_tools", "gui_refit", "gui_shortcut_scope"]:
         if not run_cmd([blender_path(), "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", t],
                        desc=f"In-Engine GUI: {t}"):
             return False
@@ -220,7 +219,6 @@ def main(argv=None):
     ]
     if any(enabled for enabled, operation in operations):
         prepare_scratch()
-        (SCRATCH / 'tmp').mkdir(exist_ok=True)
     for enabled, operation in operations:
         if enabled and not operation():
             print('Task failed. Diagnostic artifacts remain in scratch; use --clean when finished.')

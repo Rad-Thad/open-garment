@@ -6,16 +6,21 @@ import time
 from dataclasses import dataclass, field
 import numpy
 
+UNUSABLE_AVATAR = ("This object has no body shape to dress. It has no faces, is flat, or is scaled to zero. "
+                   "Choose your avatar's body mesh instead.")
+DAMAGED_ARRANGEMENT = ('The saved arrangement points on this avatar are damaged. '
+                       'Choose Reset points in the Body menu to rebuild them.')
+
 
 def _volume_bounds(vertices):
     if not vertices or any(len(point) != 3 or any(not math.isfinite(value) for value in point)
                            for point in vertices):
-        raise ValueError('Avatar vertices must contain finite three-dimensional points.')
+        raise ValueError(UNUSABLE_AVATAR)
     low = tuple(min(point[axis] for point in vertices) for axis in range(3))
     high = tuple(max(point[axis] for point in vertices) for axis in range(3))
     extent = tuple(high[axis] - low[axis] for axis in range(3))
     if min(extent) <= 0 or any(not math.isfinite(value) for value in extent):
-        raise ValueError('Avatar bounds must have positive finite width, depth, and height.')
+        raise ValueError(UNUSABLE_AVATAR)
     return low, extent
 
 
@@ -26,7 +31,7 @@ def _volume_dot(first, second):
 def _volume_unit(vector):
     length = math.hypot(*vector)
     if length <= 1e-12:
-        raise ValueError('Avatar volume has a degenerate axis.')
+        raise ValueError(UNUSABLE_AVATAR)
     return tuple(value / length for value in vector)
 
 
@@ -36,7 +41,7 @@ def _volume_cross(first, second):
             first[0] * second[1] - first[1] * second[0])
 
 
-def _volume_sections(vertices, triangles, normal, offset):
+def _volume_sections(vertices, triangles, normal, offset, with_segments=False):
     points = numpy.asarray(vertices, dtype=float).reshape(-1, 3)
     faces = numpy.asarray(triangles, dtype=numpy.int64).reshape(-1, 3)
     if not len(faces):
@@ -75,7 +80,12 @@ def _volume_sections(vertices, triangles, normal, offset):
     groups = {}
     for index in numpy.argsort(unique, kind='stable').tolist():
         groups.setdefault(int(labels[index]), []).append(unique[index])
-    return [found[members] for members in groups.values() if len(members) >= 3]
+    if not with_segments:
+        return [found[members] for members in groups.values() if len(members) >= 3]
+    ends = found[unique]
+    owners = labels[first]
+    return [(found[members], numpy.stack((ends[first[owners == label]], ends[second[owners == label]]), axis=1))
+            for label, members in groups.items() if len(members) >= 3]
 
 
 def _volume_center(points):
@@ -108,11 +118,11 @@ class FitPending(ValueError):
 
 def _array_bounds(points):
     if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not numpy.isfinite(points).all():
-        raise ValueError('Avatar vertices must contain finite three-dimensional points.')
+        raise ValueError(UNUSABLE_AVATAR)
     low = points.min(axis=0)
     extent = points.max(axis=0) - low
     if extent.min() <= 0 or not numpy.isfinite(extent).all():
-        raise ValueError('Avatar bounds must have positive finite width, depth, and height.')
+        raise ValueError(UNUSABLE_AVATAR)
     return tuple(float(value) for value in low), tuple(float(value) for value in extent)
 
 
@@ -132,10 +142,10 @@ class _BodyIndex:
             self.ranges[key] = corners.min(axis=1), corners.max(axis=1)
         return self.ranges[key]
 
-    def sections(self, normal, offset):
+    def sections(self, normal, offset, with_segments=False):
         low, high = self.ensure(normal)
         selected = numpy.nonzero((low <= offset + 1e-9) & (high >= offset - 1e-9))[0]
-        return _volume_sections(self.points, self.triangles[selected], normal, offset)
+        return _volume_sections(self.points, self.triangles[selected], normal, offset, with_segments)
 
     def slab(self, lower, upper):
         start = int(numpy.searchsorted(self.heights, lower, side='right'))
@@ -153,20 +163,32 @@ def _choose_group(groups, identity, middle):
         return None, []
     if arm:
         group = max(groups, key=lambda candidate: _volume_center(candidate)[2])
-    elif side:
-        group = max(groups, key=lambda candidate: side * (_volume_center(candidate)[0] - middle))
     else:
-        group = min(groups, key=lambda candidate: abs(_volume_center(candidate)[0] - middle))
+        group = max(groups, key=lambda candidate: side * (_volume_center(candidate)[0] - middle))
     return group, [candidate for candidate in groups if candidate is not group]
 
 
-def _section_sample(body, identity, fraction, middle, width):
+def _torso_group(parts, middle):
+    from .measurements import surrounds
+    enclosing = [points for points, segments in parts if surrounds(segments, middle)]
+    if not enclosing:
+        return None, []
+    group = min(enclosing, key=lambda candidate: abs(_volume_center(candidate)[0] - middle))
+    return group, [points for points, _ in parts if points is not group]
+
+
+def _section_sample(body, identity, fraction, middle, width, support=None):
     from .ellipse_volumes import fit_section
     arm = 'arm' in identity
     side = 1 if identity.startswith('left_') else -1 if identity.startswith('right_') else 0
     offset = middle + side * fraction * width if arm else fraction
     normal = (1, 0, 0) if arm else (0, 0, 1)
-    group, others = _choose_group(body.sections(normal, offset), identity, middle)
+    if arm or side:
+        group, others = _choose_group(body.sections(normal, offset), identity, middle)
+    else:
+        group, others = _torso_group(body.sections(normal, offset, True), middle)
+        if group is None and support is not None:
+            group, others = _torso_group(support.sections(normal, offset, True), middle)
     if group is None:
         return None
     center = _volume_center(group)
@@ -186,7 +208,7 @@ def _ellipse_ratio(points, center, radii, basis):
     return numpy.hypot(side / radii[0], front / radii[1]), numpy.hypot(side, front)
 
 
-def _refine_family(body, raw, family, middle, width):
+def _refine_family(body, raw, family, middle, width, support=None):
     from .ellipse_volumes import fit_section
     members = [identity for identity in family if raw[identity] and all('_others' in sample for sample in raw[identity])]
     if len(members) != len(family):
@@ -225,7 +247,7 @@ def _refine_family(body, raw, family, middle, width):
         height = float(best[1][2])
         identity = min(members, key=lambda name: max(min(sample['center'][2] for sample in raw[name]) - height,
                                                      height - max(sample['center'][2] for sample in raw[name]), 0))
-        sample = _section_sample(body, identity, height, middle, width)
+        sample = _section_sample(body, identity, height, middle, width, support)
         yield
         if sample is None:
             rejected.append(height)
@@ -241,22 +263,22 @@ def _refine_family(body, raw, family, middle, width):
         raw[identity].sort(key=lambda item: item['t'])
 
 
-def _fit_steps(vertices, triangles, clearance=0.03):
+def _fit_steps(vertices, triangles, clearance=0.03, support=None):
     from .ellipse_volumes import fit_section
     try:
         points = numpy.asarray(vertices, dtype=float)
     except (TypeError, ValueError) as error:
-        raise ValueError('Avatar vertices must contain finite three-dimensional points.') from error
+        raise ValueError(UNUSABLE_AVATAR) from error
     low, extent = _array_bounds(points)
     if not math.isfinite(clearance) or clearance < 0:
         raise ValueError('Avatar clearance must be nonnegative and finite.')
     try:
         faces = numpy.asarray(triangles)
     except ValueError as error:
-        raise ValueError('Avatar triangles must contain three valid vertex indices.') from error
+        raise ValueError(UNUSABLE_AVATAR) from error
     if (faces.ndim != 2 or not len(faces) or faces.shape[1] != 3 or faces.dtype.kind not in 'iu'
             or faces.min() < 0 or faces.max() >= len(points)):
-        raise ValueError('Avatar triangles must contain three valid vertex indices.')
+        raise ValueError(UNUSABLE_AVATAR)
     normalized = (points - numpy.asarray(low)) / extent[2]
     yield
     for start in range(0, len(faces), 8192):
@@ -265,10 +287,15 @@ def _fit_steps(vertices, triangles, clearance=0.03):
             break
         yield
     else:
-        raise ValueError('Avatar triangles must contain a nondegenerate surface.')
+        raise ValueError(UNUSABLE_AVATAR)
     yield
     body = _BodyIndex(normalized, faces)
     yield
+    if support is not None:
+        support = _BodyIndex((numpy.asarray(support[0], dtype=float) - numpy.asarray(low)) / extent[2],
+                             numpy.asarray(support[1], dtype=numpy.int64))
+        support.ensure((0, 0, 1))
+        yield
     for normal in ((0, 0, 1), (1, 0, 0)):
         body.ensure(normal)
         yield
@@ -279,13 +306,13 @@ def _fit_steps(vertices, triangles, clearance=0.03):
         raw[identity] = []
         for index in range(7):
             parameter = index / 6
-            sample = _section_sample(body, identity, lower + (upper - lower) * parameter, middle, width)
+            sample = _section_sample(body, identity, lower + (upper - lower) * parameter, middle, width, support)
             yield
             if sample is not None:
                 sample['t'] = parameter
                 raw[identity].append(sample)
     for family in ADAPTIVE_FAMILIES:
-        yield from _refine_family(body, raw, family, middle, width)
+        yield from _refine_family(body, raw, family, middle, width, support)
     volumes = []
     for identity, lower, upper in VOLUME_SPECIFICATIONS:
         arm = 'arm' in identity
@@ -395,7 +422,7 @@ def _volume_validate(setup):
                 raise ValueError
             _volume_validate(setup['legacy'])
     except (KeyError, TypeError, ValueError, OverflowError) as error:
-        raise ValueError('Invalid avatar arrangement volumes; explicitly regenerate avatar setup.') from error
+        raise ValueError(DAMAGED_ARRANGEMENT) from error
     return setup
 
 
@@ -416,24 +443,60 @@ def _volume_axes(matrix):
     return (right, _volume_cross(up, right), up)
 
 
+def _surface(context, source):
+    from .body_surface import revealed
+    with revealed(context, source) as evaluated:
+        mesh = evaluated.to_mesh()
+        try:
+            mesh.calc_loop_triangles()
+            local = numpy.zeros(len(mesh.vertices) * 3, dtype=numpy.float32)
+            mesh.vertices.foreach_get('co', local)
+            faces = numpy.zeros(len(mesh.loop_triangles) * 3, dtype=numpy.int32)
+            mesh.loop_triangles.foreach_get('vertices', faces)
+            return local, faces, evaluated.matrix_world.copy() if hasattr(evaluated.matrix_world, 'copy') else evaluated.matrix_world
+        finally:
+            evaluated.to_mesh_clear()
+
+
+def _framed(local, matrix, axes):
+    rows = numpy.array([[matrix[row][column] for column in range(4)] for row in range(3)], dtype=float)
+    world = local.reshape(-1, 3).astype(float) @ rows[:, :3].T + rows[:, 3]
+    return world @ numpy.asarray(axes, dtype=float).T
+
+
 def _volume_mesh(context, avatar):
-    evaluated = avatar.evaluated_get(context.evaluated_depsgraph_get())
-    mesh = evaluated.to_mesh()
-    try:
-        mesh.calc_loop_triangles()
-        local = numpy.zeros(len(mesh.vertices) * 3, dtype=numpy.float32)
-        mesh.vertices.foreach_get('co', local)
-        faces = numpy.zeros(len(mesh.loop_triangles) * 3, dtype=numpy.int32)
-        mesh.loop_triangles.foreach_get('vertices', faces)
-        fingerprint = hashlib.sha256(local.tobytes() + faces.tobytes()).hexdigest()
-        matrix = numpy.array([[evaluated.matrix_world[row][column] for column in range(4)] for row in range(3)], dtype=float)
-        axes = _volume_axes(evaluated.matrix_world)
-        world = local.reshape(-1, 3).astype(float) @ matrix[:, :3].T + matrix[:, 3]
-        vertices = world @ numpy.asarray(axes, dtype=float).T
-        _array_bounds(vertices)
-        return vertices, faces.reshape(-1, 3), axes, fingerprint
-    finally:
-        evaluated.to_mesh_clear()
+    local, faces, matrix = _surface(context, avatar)
+    fingerprint = hashlib.sha256(local.tobytes() + faces.tobytes()).hexdigest()
+    axes = _volume_axes(matrix)
+    vertices = _framed(local, matrix, axes)
+    _array_bounds(vertices)
+    return vertices, faces.reshape(-1, 3), axes, fingerprint
+
+
+def _support_sources(scene):
+    from .layering import collision_extras
+    return collision_extras(scene)
+
+
+def _support_key(scene):
+    return [[source.name_full, len(source.data.polygons)] for source in _support_sources(scene)]
+
+
+def _support(context, axes):
+    vertices, faces, offset = [], [], 0
+    for source in _support_sources(context.scene):
+        local, triangles, matrix = _surface(context, source)
+        if not len(triangles):
+            continue
+        vertices.append(_framed(local, matrix, axes))
+        faces.append(triangles.reshape(-1, 3).astype(numpy.int64) + offset)
+        offset += len(vertices[-1])
+    if not faces:
+        return None
+    return numpy.concatenate(vertices), numpy.concatenate(faces)
+
+
+_revealed_frames = {}
 
 
 def _volume_frame(context):
@@ -443,8 +506,19 @@ def _volume_frame(context):
         vertices,triangles,axes,_=_volume_mesh(context,avatar)
         return (*_array_bounds(vertices),axes)
     from mathutils import Vector
+    from .body_surface import hiding_state, revealed
+    hiding=hiding_state(avatar)
+    if hiding:
+        key=(job_key(avatar),hiding,tuple(tuple(row) for row in evaluated.matrix_world),tuple(tuple(point) for point in evaluated.bound_box))
+        if key not in _revealed_frames:
+            with revealed(context,avatar) as shown:
+                _revealed_frames.clear()
+                _revealed_frames[key]=[tuple(point) for point in shown.bound_box]
+        box=_revealed_frames[key]
+    else:
+        box=evaluated.bound_box
     axes=_volume_axes(evaluated.matrix_world)
-    corners=[evaluated.matrix_world @ Vector(point) for point in evaluated.bound_box]
+    corners=[evaluated.matrix_world @ Vector(point) for point in box]
     projected=[tuple(_volume_dot(point,axis) for axis in axes) for point in corners]
     return (*_volume_bounds(projected),axes)
 
@@ -462,6 +536,7 @@ class FitJob:
     error: str = ''
     slices: list = field(default_factory=list)
     timer_slices: list = field(default_factory=list)
+    support: list = field(default_factory=list)
 
 
 _jobs = {}
@@ -521,6 +596,7 @@ def _advance(job, deadline):
         except StopIteration as finished:
             job.setup = finished.value
             job.setup['fingerprint'] = job.fingerprint
+            job.setup['support'] = job.support
             _install(job)
         except (ValueError, ReferenceError) as failure:
             job.state = 'failed'
@@ -548,7 +624,7 @@ def _fit_timer():
 
 def job_key(avatar):
     try:
-        return avatar.as_pointer() if hasattr(avatar, 'as_pointer') else id(avatar)
+        return getattr(avatar, 'session_uid', None) or id(avatar)
     except ReferenceError:
         return id(avatar)
 
@@ -574,13 +650,15 @@ def start_fit(context, keep=False, completed=None):
         vertices, triangles, axes, fingerprint = _volume_mesh(context, avatar)
     finally:
         _preparing.discard(job_key(avatar))
+    support_key = _support_key(context.scene)
     current = _jobs.get(job_key(avatar))
-    if current is not None and current.fingerprint == fingerprint and current.keep == keep:
+    if current is not None and current.fingerprint == fingerprint and current.keep == keep and current.support == support_key:
         current.completed = completed or current.completed
         return current
     if current is not None:
         current.state = 'cancelled'
-    job = FitJob(avatar, context.scene, fingerprint, _fit_steps(vertices, triangles, _clearance(context)), keep, completed)
+    job = FitJob(avatar, context.scene, fingerprint, _fit_steps(vertices, triangles, _clearance(context), _support(context, axes)),
+                 keep, completed, support=support_key)
     _jobs[job_key(avatar)] = job
     try:
         import bpy
@@ -612,9 +690,18 @@ def ensure_volumes(context, force=False, wait=True):
     stored = avatar.get('dd_arrangement_volumes')
     if stored is not None and not force:
         try:
-            return _volume_validate(json.loads(stored))
+            setup = _volume_validate(json.loads(stored))
         except (TypeError, json.JSONDecodeError) as error:
-            raise ValueError('Invalid avatar arrangement volumes JSON; explicitly regenerate avatar setup.') from error
+            raise ValueError(DAMAGED_ARRANGEMENT) from error
+        support_key = _support_key(context.scene)
+        if setup.get('support', []) == support_key:
+            return setup
+        job = _jobs.get(job_key(avatar))
+        if job is None or job.support != support_key:
+            job = start_fit(context, keep=True)
+        if not wait:
+            raise FitPending('Preparing arrangement points for ' + avatar.name + '…')
+        return finish_fit(job)
     if force:
         job = _jobs.pop(job_key(avatar), None)
         if job is not None:
@@ -624,6 +711,39 @@ def ensure_volumes(context, force=False, wait=True):
     if not wait:
         raise FitPending('Preparing arrangement points for ' + avatar.name + '…')
     return finish_fit(job)
+
+
+TORSO_CHECK_RANGE = (.60, .78)
+TORSO_CHECK_STEP = .03
+
+
+def missing_torso(context, sources, points=None):
+    from .measurements import surrounds
+    avatar = _volume_avatar(context)
+    vertices, triangles, axes, _ = _volume_mesh(context, avatar)
+    low, extent = _array_bounds(vertices)
+    indexes = [_BodyIndex(vertices, triangles.astype(numpy.int64))]
+    for source in sources:
+        if source is avatar or source is None:
+            continue
+        local, faces, matrix = _surface(context, source)
+        if len(faces):
+            indexes.append(_BodyIndex(_framed(local, matrix, axes), faces.reshape(-1, 3).astype(numpy.int64)))
+    lower, upper = (low[2] + extent[2] * fraction for fraction in TORSO_CHECK_RANGE)
+    if points is not None:
+        heights = numpy.asarray(points, dtype=float).reshape(-1, 3) @ numpy.asarray(axes[2], dtype=float)
+        if not len(heights):
+            return False
+        lower, upper = max(lower, float(heights.min())), min(upper, float(heights.max()))
+    if lower > upper:
+        return False
+    middle = low[0] + extent[0] / 2
+    count = max(2, int(math.ceil((upper - lower) / (extent[2] * TORSO_CHECK_STEP))) + 1)
+    for height in numpy.linspace(lower, upper, count):
+        segments = [part[1] for index in indexes for part in index.sections((0, 0, 1), float(height), True)]
+        if not segments or not surrounds(numpy.concatenate(segments), middle):
+            return True
+    return False
 
 
 def stale_fit(context):
@@ -876,7 +996,7 @@ def layout_plan(pieces, body_bounds, mode):
         raise ValueError('Avatar bounds must be finite.')
     extent = tuple(high[axis] - low[axis] for axis in range(3))
     if any(not math.isfinite(value) or value <= 0 for value in extent):
-        raise ValueError('Avatar bounds must have positive width, depth, and height.')
+        raise ValueError(UNUSABLE_AVATAR)
     center = tuple(low[axis] + extent[axis] * .5 for axis in range(3))
     ordered = sorted(pieces, key=lambda piece: (piece[1].casefold(), piece[0]))
     result = []

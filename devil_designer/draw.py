@@ -17,7 +17,8 @@ from .avatar_field import EYEDROPPER, LABEL, SEARCH, TEXT_OFFSET, TEXT_SIZE
 
 from .minimal import FLYOUT_TOOLS, STRIP_KEYS
 from .localization import translate
-from .ui_system import (MENU_CARDS,
+from .snapping import EDGE, INTERSECTION, LABELS, MIDPOINT
+from .ui_system import (MENU_CARDS, SILHOUETTE_TINT,
     BG_BASE, BG_ELEVATED, BG_WELL, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, ACCENT, ACCENT_BG, ACCENT_BORDER, ACCENT_HOVER, BORDER, BORDER_SUBTLE, RADIUS_WINDOW, RADIUS_BADGE, Tooltip, ComponentRenderer, SURFACE_FLOATING, SURFACE_OUTLINE, SELECTION, TEXT_ON_ACCENT, MinimalMetrics,
     NativeField,
     TRANSFORM_FRAME, TRANSFORM_HANDLE, TRANSFORM_HANDLE_HOVER, TRANSFORM_PIVOT, TRANSFORM_PREVIEW_OK,
@@ -366,6 +367,22 @@ class Renderer:
         self.triangles(projected, color, indices)
         return True
 
+    def draw_snap_marker(self, spot, kind, s):
+        x, y = spot
+        reach = 6 * s
+        if kind == MIDPOINT:
+            shapes = [[(x - reach, y - reach * .8), (x + reach, y - reach * .8), (x, y + reach), (x - reach, y - reach * .8)]]
+        elif kind == INTERSECTION:
+            shapes = [[(x - reach, y - reach), (x + reach, y + reach)], [(x - reach, y + reach), (x + reach, y - reach)]]
+        elif kind == EDGE:
+            shapes = [[(x, y - reach), (x + reach, y), (x, y + reach), (x - reach, y), (x, y - reach)]]
+        else:
+            shapes = [[(x - reach, y - reach), (x + reach, y - reach), (x + reach, y + reach), (x - reach, y + reach), (x - reach, y - reach)]]
+        for width, color in ((3.5, (0.0, 0.0, 0.0, .55)), (1.5, SELECTION)):
+            for shape in shapes:
+                self.lines(shape, color, width, True)
+        self.text(x + reach + 5 * s, y + reach, LABELS[kind], 10, TEXT_PRIMARY)
+
     def draw_grab_ring(self, ed):
         pixels = ed.grab_ring_pixels()
         if pixels is None:
@@ -375,22 +392,37 @@ class Renderer:
         self.lines(ring, (0.0, 0.0, 0.0, .45), 3, strip=True)
         self.lines(ring, (*ACCENT[:3], 1.0), 1.5, strip=True)
 
+    def draw_cloth_pins(self, ed):
+        pins = ed.cloth_pin_pixels()
+        for visible, outline, fill in ((False, .2, .35), (True, .5, 1)):
+            pixels = [pixel for pixel, seen in pins if seen is visible]
+            for radius, color in ((5.5, (0.0, 0.0, 0.0, outline)), (3.5, (1, 0.42, 0.3, fill))):
+                reach = radius * ed.canvas_layout.scale
+                ring = [(math.cos(step * math.tau / 8) * reach, math.sin(step * math.tau / 8) * reach) for step in range(8)]
+                corners = [(x + across, y + up) for x, y in pixels for across, up in ring]
+                self.triangles(corners, color, [(base * 8, base * 8 + step, base * 8 + step + 1) for base in range(len(pixels)) for step in range(1, 7)])
+
     def draw_shaping_strip(self, ed):
         rects = ed.shaping_strip_rects
         bounds = rects.get('STRIP_BOUNDS')
         if not bounds or ed.shaping is None:
             return
-        scale = min(self.s, bounds.w / 186)
+        scale = min(self.s, bounds.h / 36)
         radius = ed.canvas_layout.metrics.menu_back
         self.round_rect(bounds, SURFACE_FLOATING, radius=radius)
         self.round_rect_outline(bounds, SURFACE_OUTLINE, radius=radius)
-        for key, label in (('RADIUS_MINUS', '-'), ('RADIUS_PLUS', '+')):
-            rect = rects[key]
+        for key, label in (('RADIUS_MINUS', '-'), ('RADIUS_PLUS', '+'), ('STRENGTH_MINUS', '-'), ('STRENGTH_PLUS', '+')):
+            rect = rects.get(key)
+            if rect is None:
+                continue
             self.round_rect(rect, ELEVATED if rect.contains(*ed.pointer) else BG_WELL, radius=4)
             self.text(rect.x + rect.w / 2, rect.y + 7 * scale, label, 13, TEXT, True)
         self.text(bounds.x + bounds.w - 28 * scale, bounds.y + 13 * scale, ed.shaping.mode.title(), 10, ACCENT, True)
         value = rects['RADIUS_VALUE']
         self.text(value.x + value.w / 2, value.y + 8 * scale, f'{ed.shaping.radius * 1000:.0f} mm', 10, TEXT_SUB, True)
+        strength = rects.get('STRENGTH_VALUE')
+        if strength is not None:
+            self.text(strength.x + strength.w / 2, strength.y + 8 * scale, f'{ed.shaping.strength * 100:.0f}%', 10, TEXT_SUB, True)
         self.text(bounds.x + 4 * scale, bounds.y - 18 * scale, ed.message, 10, TEXT, max_width=bounds.w - 8 * scale)
 
     def draw(self, ed):
@@ -455,7 +487,8 @@ class Renderer:
                     outline = [view.screen(point, c) for point in world]
                     holes = [path.outline() for path in pat.paths if path.role == 'HOLE']
                     color = (.70, .76, .82)
-                    opacity = .10 if selected else .055
+                    hovered = not selected and ed.tool == 'SELECT' and hovered_piece is not None and hovered_piece.id == source.id
+                    opacity = .10 if selected else .08 if hovered else .055
                     self.fill_pattern(pat.id, world, outline, (*color, opacity), holes, view, c)
                     for size_name in (getattr(ed.session.document, 'sizes', []) or []):
                         if size_name == getattr(ed.session.document, 'base_size', ''):
@@ -472,7 +505,7 @@ class Renderer:
                         screen = [view.screen(point, c) for point in points]
                         active = selected and ed.session.path == path
                         line_color = ACCENT if active else (0.9, 0.48, 0.48, 0.9) if role in {'HOLE', 'SLIT'} else (*ACCENT[:3], 0.55) if (partner_selected and path == 'OUTER') else (*color, 0.95)
-                        self.lines(screen + (screen[:1] if closed else []), line_color, 2.2 if (active or selected) else 1.5, True)
+                        self.lines(screen + (screen[:1] if closed else []), line_color, 2.2 if (active or selected) else 1.9 if hovered and path == 'OUTER' else 1.5, True)
                         fold = next((feature for feature in pat.features if feature.get('type') == 'FOLD' and nodes and feature.get('apex') == nodes[0].id), None)
                         if fold and len(screen) >= 2:
                             start, end = screen[0], screen[-1]
@@ -631,6 +664,9 @@ class Renderer:
                         lbl = ed.gesture.get('label', 'Pivot')
                         self.text(pt[0] + 10 * s, pt[1] + 5 * s, lbl, 10, TEXT_PRIMARY)
 
+                if ed.snap_marker:
+                    self.draw_snap_marker(view.screen(ed.snap_marker[0], c), ed.snap_marker[1], s)
+
                 gesture = ed.gesture
                 preview_doc = gesture.get('candidate') if gesture and gesture.get('mode') in {'MOVE', 'TRANSFORM'} else None
                 preflight = (gesture.get('preflight') or {}) if preview_doc is not None else {}
@@ -662,6 +698,19 @@ class Renderer:
                     knob_ring = [(frame['knob'][0] + math.cos(step * math.tau / 20) * (TRANSFORM_KNOB_RADIUS + 1.5) * s,
                                   frame['knob'][1] + math.sin(step * math.tau / 20) * (TRANSFORM_KNOB_RADIUS + 1.5) * s) for step in range(21)]
                     self.lines(knob_ring, TRANSFORM_FRAME, 1.0, True)
+
+                trace = ed.trace_frame()
+                if trace is not None:
+                    trace_hover = ed.trace_frame_hit(trace)
+                    self.lines(trace['corners'] + [trace['corners'][0]], TRANSFORM_FRAME, 1.0, True)
+                    self.lines([trace['stem'], trace['knob']], TRANSFORM_FRAME, 1.0)
+                    half = TRANSFORM_HANDLE_SIZE * s / 2
+                    for corner in trace['corners']:
+                        hot = trace_hover == 'SCALE' and math.dist(ed.pointer, corner) <= TRANSFORM_HIT_RADIUS * s
+                        square = Rect(corner[0] - half, corner[1] - half, 2 * half, 2 * half)
+                        self.round_rect(square, TRANSFORM_HANDLE_HOVER if hot else TRANSFORM_HANDLE, radius=1)
+                        self.round_rect_outline(square, TRANSFORM_FRAME, radius=1, width=1.0)
+                    self.dot(trace['knob'], TRANSFORM_KNOB_RADIUS, TRANSFORM_HANDLE_HOVER if trace_hover == 'ROTATE' else TRANSFORM_HANDLE)
 
                 if ed.session.has_selection() and not (gesture and gesture.get('mode') == 'SET_PIVOT'):
                     p_screen = view.screen(ed.session.get_pivot(), c)
@@ -926,7 +975,7 @@ class Renderer:
                 elif key == 'GARMENT':
                     position = (rect.x + 20 * scale, rect.y - 18 * scale)
                 tip_label = ('Snap: On' if ed.snap else 'Snap: Off') if key == 'TOGGLE_SNAP' else \
-                            ('Body guide: On' if ed._scene.dd_reference_visible else 'Body guide: Off') if key == 'TOGGLE_GUIDE' else \
+                            ('Body silhouette: On' if ed._scene.dd_reference_visible else 'Body silhouette: Off') if key == 'TOGGLE_GUIDE' else \
                             ('Lengths: On' if ed._scene.dd_lengths_visible else 'Lengths: Off') if key == 'TOGGLE_LENGTHS' else blocker or label
                 if key == 'TOGGLE_FIT_MAP':
                     tip_label = 'Fit map: On' if ed.fit_overlay.enabled else 'Fit map: Off'
@@ -1263,7 +1312,7 @@ class Renderer:
     def seam_mismatch(self, ed, seam):
         preview = ed.viewport_sewing
         record = preview.truth['records'].get(seam.id) if preview.truth else None
-        return ed.session.document.seam_stats(seam)[3] > 1 or bool(record and any(flag != 'B reversed' for flag in record['flags']))
+        return ed.session.document.seam_stats(seam)[3] > 1 or bool(record and bool(record['flags']))
 
     def strip_key(self, row, shortcut):
         if shortcut:
@@ -1375,7 +1424,7 @@ class Renderer:
                     label_y += 18 * self.s
                 self.text(label_x, label_y, label, 10, notch_col, max_width=max(80 * self.s, c.x + c.w - label_x - 8 * self.s))
                 if record and record['flags']:
-                    self.text(label_x, label_y - 12 * self.s, ' · '.join(record['flags']).replace('B reversed', 'Direction reversed'), 10, notch_col, max_width=max(80 * self.s, c.x + c.w - label_x - 8 * self.s))
+                    self.text(label_x, label_y - 12 * self.s, ' · '.join(record['flags']), 10, notch_col, max_width=max(80 * self.s, c.x + c.w - label_x - 8 * self.s))
         for point, _, _, _ in ed.seam_end_points():
             self.dot(point, 5.5, (.3, .7, 1, 1))
         if ed.pen_points or ed.pending_strokes:
@@ -1446,8 +1495,7 @@ class Renderer:
             self.reference_revision = reference.revision
         if scene.dd_reference_visible and scene.dd_reference_opacity > 0:
             alpha = scene.dd_reference_opacity
-            tint = (0.48, 0.56, 0.64)
-            color = tuple(BG[i] * (1 - alpha) + tint[i] * alpha for i in range(3)) + (1,)
+            color = tuple(BG[i] * (1 - alpha) + SILHOUETTE_TINT[i] * alpha for i in range(3)) + (1,)
             origin = ed.view.screen((scene.dd_reference_x, scene.dd_reference_y), c)
             zoom = ed.view.zoom
             transform = Matrix(((zoom, 0, 0, origin[0]), (0, zoom, 0, origin[1]), (0, 0, 1, 0), (0, 0, 0, 1)))

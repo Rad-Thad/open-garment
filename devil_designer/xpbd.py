@@ -1,9 +1,10 @@
 import bmesh
 import bpy
 import numpy as np
+from mathutils.bvhtree import BVHTree
 
 from . import gpu_backend, seam_shrink, xpbd_nodes
-from .presets import MASS_SCALE, STRETCH_COMPLIANCE, resolve_preset
+from .presets import MASS_SCALE, STRETCH_COMPLIANCE, air_damping, resolve_preset
 
 MODIFIER = 'DD XPBD'
 BEND_COMPLIANCE = 5.0e-4
@@ -24,16 +25,28 @@ MIN_SUBSTEPS = 10
 SIM_FPS = 30
 LIVE_SUBSTEPS = 12
 REFINE_FRAMES = 40
+REFINE_ITERATIONS = 4
 CONTACT_RADIUS = .006
 GRAB_STRIDE = .05
 GRAB_REACH = .4
 WELD_REACH = .06
 SHELL_VOXEL = .005
 SHELL_THICKNESS = .015
+SHELL_FULL_DETAIL_AREA = 4.0
+PROXY_TRIANGLES = 3000
+SHELL_TRIANGLES = 8000
+GATE_PAD = .002
 
 
 def modifier(obj):
     return obj.modifiers.get(MODIFIER)
+
+
+def current(obj):
+    if gpu_backend.owns(obj):
+        return True
+    mod = modifier(obj)
+    return mod is not None and mod.node_group is not None and mod.node_group.get('dd_group_version') == xpbd_nodes.GROUP_VERSION
 
 
 def input_slot(obj, name):
@@ -126,56 +139,108 @@ def seam_rings(edges, seam, count, rings=1):
 
 
 def world_surface(context, source):
-    graph = context.evaluated_depsgraph_get()
-    mesh = bpy.data.meshes.new_from_object(source.evaluated_get(graph), depsgraph=graph)
+    from .body_surface import revealed
+    with revealed(context, source) as evaluated:
+        mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=context.evaluated_depsgraph_get())
     mesh.transform(source.matrix_world)
     return mesh
 
 
 def bake_collider(context):
-    from . import garment, layering
+    from . import layering
     scene = context.scene
-    bodies = layering.collision_bodies(scene)
     merged = bmesh.new()
-    for source in bodies:
+    for source in layering.collision_bodies(scene):
         surface = world_surface(context, source)
         merged.from_mesh(surface)
         bpy.data.meshes.remove(surface)
     mesh = bpy.data.meshes.new('DD Collision Body')
     merged.to_mesh(mesh)
     merged.free()
-    collider = bpy.data.objects.new('DD Collision Body', mesh)
-    garment.collection(scene).objects.link(collider)
-    garment.tag(collider, 'collider')
-    collider.hide_render = True
-    collider.hide_set(True)
-    return collider
+    return hidden_collider(scene, 'DD Collision Body', mesh)
+
+
+def evaluated_mesh(context, obj):
+    obj.hide_set(False)
+    context.view_layer.update()
+    graph = context.evaluated_depsgraph_get()
+    mesh = bpy.data.meshes.new_from_object(obj.evaluated_get(graph), depsgraph=graph)
+    obj.hide_set(True)
+    return mesh
+
+
+def triangle_count(mesh):
+    mesh.calc_loop_triangles()
+    return len(mesh.loop_triangles)
+
+
+def decimated(context, obj, target):
+    count = triangle_count(obj.data)
+    if count <= target:
+        return None
+    decimate = obj.modifiers.new('DD Decimate', 'DECIMATE')
+    decimate.ratio = target / count
+    mesh = evaluated_mesh(context, obj)
+    obj.modifiers.remove(decimate)
+    return mesh
+
+
+def hidden_collider(scene, name, mesh):
+    from . import garment
+    obj = bpy.data.objects.new(name, mesh)
+    garment.collection(scene).objects.link(obj)
+    garment.tag(obj, 'collider')
+    obj.hide_render = True
+    obj.hide_set(True)
+    return obj
+
+
+def shell_coarsening(mesh, unit):
+    areas = np.empty(len(mesh.polygons))
+    mesh.polygons.foreach_get('area', areas)
+    return max(1.0, float(np.sqrt(areas.sum() * unit * unit / SHELL_FULL_DETAIL_AREA)))
 
 
 def bake_shell(context, collider):
-    from . import garment
     scene = context.scene
     unit = max(1e-6, scene.unit_settings.scale_length)
+    coarsening = shell_coarsening(collider.data, unit)
     solid = collider.modifiers.new('DD Shell Solid', 'SOLIDIFY')
-    solid.thickness = SHELL_THICKNESS / unit
+    solid.thickness = SHELL_THICKNESS * coarsening / unit
     solid.offset = -1
     remesh = collider.modifiers.new('DD Shell', 'REMESH')
     remesh.mode = 'VOXEL'
-    remesh.voxel_size = SHELL_VOXEL / unit
+    remesh.voxel_size = SHELL_VOXEL * coarsening / unit
     remesh.use_smooth_shade = False
-    collider.hide_set(False)
-    context.view_layer.update()
-    graph = context.evaluated_depsgraph_get()
-    mesh = bpy.data.meshes.new_from_object(collider.evaluated_get(graph), depsgraph=graph)
+    mesh = evaluated_mesh(context, collider)
     collider.modifiers.remove(remesh)
     collider.modifiers.remove(solid)
-    collider.hide_set(True)
-    shell = bpy.data.objects.new('DD Collision Shell', mesh)
-    garment.collection(scene).objects.link(shell)
-    garment.tag(shell, 'collider')
-    shell.hide_render = True
-    shell.hide_set(True)
+    shell = hidden_collider(scene, 'DD Collision Shell', mesh)
+    bounded = decimated(context, shell, SHELL_TRIANGLES)
+    if bounded is not None:
+        shell.data = bounded
+        bpy.data.meshes.remove(mesh)
     return shell
+
+
+def surface_points(mesh):
+    points = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
+    mesh.vertices.foreach_get('co', points)
+    return points.reshape(-1, 3)
+
+
+def deviation(dense, coarse):
+    triangle_count(coarse)
+    corners = np.empty(len(coarse.loop_triangles) * 3, dtype=np.int32)
+    coarse.loop_triangles.foreach_get('vertices', corners)
+    tree = BVHTree.FromPolygons(surface_points(coarse).tolist(), corners.reshape(-1, 3).tolist(), all_triangles=True)
+    return max((tree.find_nearest(point)[3] for point in surface_points(dense).tolist()), default=0.0)
+
+
+def bake_proxy(context, collider):
+    mesh = decimated(context, collider, PROXY_TRIANGLES)
+    gap = 0.0 if mesh is None else deviation(collider.data, mesh)
+    return hidden_collider(context.scene, 'DD Collision Proxy', collider.data.copy() if mesh is None else mesh), gap
 
 
 def restart_from_pose(obj):
@@ -242,11 +307,14 @@ def strengthen(obj, vertices, multiplier):
 def refine(context, obj):
     scene = context.scene
     live = input_slot(obj, 'Inner Substeps').value
+    iterations = input_slot(obj, 'Iterations').value
     set_input(obj, 'Inner Substeps', max(live, scene.dd_quality))
+    set_input(obj, 'Iterations', max(iterations, REFINE_ITERATIONS))
     obj.update_tag()
     for _ in range(REFINE_FRAMES):
         scene.frame_set(scene.frame_current + 1)
     set_input(obj, 'Inner Substeps', live)
+    set_input(obj, 'Iterations', iterations)
     obj.update_tag()
 
 
@@ -273,6 +341,54 @@ def bend_links(rest, edges, stiff):
     return np.array(sorted(links), dtype=np.int32).reshape(-1, 2)
 
 
+def seam_frame(flat, neighbors, partners, first, second):
+    for ahead in neighbors[first]:
+        behind = next((item for item in partners.get(ahead, ()) if item in neighbors[second]), None)
+        if behind is None:
+            continue
+        along_first = flat[ahead] - flat[first]
+        along_second = flat[behind] - flat[second]
+        turn = np.arctan2(along_first[1], along_first[0]) - np.arctan2(along_second[1], along_second[0])
+        rotation = np.array(((np.cos(turn), -np.sin(turn)), (np.sin(turn), np.cos(turn))))
+        sides = []
+        for center, along in ((first, along_first), (second, along_second)):
+            inside = [flat[item] - flat[center] for item in neighbors[center] if item not in partners]
+            if not inside:
+                return None
+            spread = np.mean(inside, axis=0)
+            sides.append(np.sign(along[0] * spread[1] - along[1] * spread[0]))
+        if sides[0] != sides[1]:
+            return rotation
+        axis = along_second / max(np.linalg.norm(along_second), 1e-12)
+        return rotation @ (2 * np.outer(axis, axis) - np.eye(2))
+    return None
+
+
+def seam_links(rest, edges, loose):
+    flat = rest[:, :2]
+    neighbors = [set() for _ in range(len(rest))]
+    for first, second in edges[~loose].tolist():
+        neighbors[first].add(second)
+        neighbors[second].add(first)
+    partners = {}
+    for first, second in edges[loose].tolist():
+        partners.setdefault(first, set()).add(second)
+        partners.setdefault(second, set()).add(first)
+    links = {}
+    for first, second in edges[loose].tolist():
+        frame = seam_frame(flat, neighbors, partners, first, second)
+        if frame is None:
+            continue
+        for near in neighbors[first] - partners.keys():
+            ahead = flat[near] - flat[first]
+            for far in neighbors[second] - partners.keys():
+                behind = frame @ (flat[far] - flat[second])
+                if ahead @ behind < LINK_STRAIGHTNESS * np.linalg.norm(ahead) * np.linalg.norm(behind):
+                    links.setdefault((min(near, far), max(near, far)), np.linalg.norm(ahead - behind))
+    pairs = sorted(links)
+    return np.array(pairs, dtype=np.int32).reshape(-1, 2), np.array([links[pair] for pair in pairs], dtype=float)
+
+
 def add_edges(mesh, links):
     start = len(mesh.edges)
     mesh.edges.add(len(links))
@@ -297,6 +413,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     structural = np.empty(count)
     bending = np.empty(count)
     density = np.empty(count)
+    damping = np.empty(count)
     grain = np.empty((count, 4))
     measured = np.zeros(count, dtype=bool)
     stretch_warp_vertex = np.zeros(count)
@@ -308,6 +425,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
         structural[ids] = values['structural']
         bending[ids] = values['bending']
         density[ids] = values['density']
+        damping[ids] = air_damping(values['density'])
         grain[ids] = values['weft'], values['bias'], values['shrink_weft'], values['shrink_warp']
         data = values.get('measured')
         if data is not None:
@@ -328,10 +446,12 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     edges = edges.reshape(-1, 2)
     loose = np.array([edge.is_loose for edge in mesh.edges], dtype=bool)
     near_seam = seam_rings(edges, loose, count)
-    links = bend_links(rest, edges[~loose], (bending >= LINK_MIN_BENDING) & ~measured)
+    bridges, bridge_length = seam_links(rest, edges, loose)
+    links = np.concatenate((bend_links(rest, edges[~loose], (bending >= LINK_MIN_BENDING) & ~measured), bridges))
     add_edges(mesh, links)
     edges = np.concatenate((edges, links))
     linked = np.concatenate((np.zeros(len(loose), dtype=bool), np.ones(len(links), dtype=bool)))
+    bridged = np.arange(len(edges)) >= len(edges) - len(bridges)
     loose = np.concatenate((loose, np.zeros(len(links), dtype=bool)))
     shrink = np.zeros(count)
     elastics = [record for record in doc.elastics if record['pattern'] in maps]
@@ -356,6 +476,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     span = (rest[edges[:, 1]] - rest[edges[:, 0]])[:, :2] * (1 - pair_grain[:, 2:])
     length = np.linalg.norm(span, axis=1)
     across, along = (np.square(span / np.maximum(length, 1e-12)[:, None])).T
+    length[bridged] = bridge_length
     grain_stiffness = along ** 2 + pair_grain[:, 0] * across ** 2 + pair_grain[:, 1] * (1 + pair_grain[:, 0]) * across * along
     length *= 1 - (shrink[edges[:, 0]] + shrink[edges[:, 1]]) * .5
     length[loose] = 0.0
@@ -364,6 +485,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     compliance = STRETCH_COMPLIANCE * 32.0 / (pair_stiffness * np.maximum(grain_stiffness, 1e-3))
     compliance[loose] = SEAM_COMPLIANCE
     compliance[linked] = LINK_COMPLIANCE * (LINK_MIN_BENDING / np.minimum(bending[edges[linked, 0]], bending[edges[linked, 1]])) ** 2
+    compliance[bridged] = LINK_COMPLIANCE * (LINK_MIN_BENDING / np.maximum(np.minimum(bending[bridges[:, 0]], bending[bridges[:, 1]]), LINK_MIN_BENDING)) ** 2
     if measured.any():
         mesh.calc_loop_triangles()
         triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
@@ -388,7 +510,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
         compliance[measured_edges] = length[measured_edges] ** 2 / (k_dir[measured_edges] * np.maximum(edge_area[measured_edges], 1e-12) * MASS_SCALE)
     write(mesh, 'rest_length', 'FLOAT', 'EDGE', length)
     write(mesh, 'dd_seam_start', 'FLOAT', 'EDGE', seam_start)
-    write(mesh, 'dd_seam', 'BOOLEAN', 'EDGE', loose)
+    write(mesh, 'dd_seam', 'BOOLEAN', 'EDGE', loose | bridged)
     write(mesh, 'dd_bend_link', 'BOOLEAN', 'EDGE', linked)
     write(mesh, 'dd_edge_compliance', 'FLOAT', 'EDGE', compliance)
     write(mesh, 'dd_rest_position', 'FLOAT_VECTOR', 'POINT', rest)
@@ -398,9 +520,11 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     write(mesh, 'dd_flex_weft', 'FLOAT', 'POINT', flex_weft)
     write(mesh, 'dd_flex_bias', 'FLOAT', 'POINT', flex_bias)
     write(mesh, 'mass', 'FLOAT', 'POINT', np.maximum(face_masses(mesh, rest, density) * MASS_SCALE, 1e-5))
+    write(mesh, 'dd_damping', 'FLOAT', 'POINT', damping)
     write(mesh, 'radius', 'FLOAT', 'POINT', np.full(count, CONTACT_RADIUS / unit))
     write(mesh, 'dd_contact_weight', 'FLOAT', 'POINT', np.where(near_seam, 0.0, 1.0))
-    write(mesh, 'dd_body_margin', 'FLOAT', 'POINT', np.full(count, scene.dd_skin_offset / unit))
+    margin = scene.dd_skin_offset / unit
+    write(mesh, 'dd_body_margin', 'FLOAT', 'POINT', np.full(count, margin))
     write(mesh, 'dd_body_grip', 'FLOAT', 'POINT', np.full(count, scene.dd_friction))
     write(mesh, 'dd_body_step', 'FLOAT', 'POINT', np.full(count, BODY_STEP / unit))
     partner = np.full(count, -1, dtype=np.int32)
@@ -410,6 +534,8 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     write(mesh, 'dd_weld_reach', 'FLOAT', 'POINT', np.full(count, WELD_REACH / unit))
     thickness = .006 / unit if scene.dd_self_collision else 0.0
     write(mesh, 'dd_self_thickness', 'FLOAT', 'POINT', np.full(count, thickness))
+    write(mesh, xpbd_nodes.SIDE_SIGN, 'FLOAT', 'POINT', np.zeros(count))
+    write(mesh, xpbd_nodes.SIDE_REST, 'FLOAT_VECTOR', 'POINT', np.zeros((count, 3)))
     write(mesh, 'dd_frame_time', 'FLOAT', 'POINT', np.full(count, 1 / SIM_FPS))
     write(mesh, 'dd_time_zero', 'FLOAT', 'POINT', np.full(count, scene.frame_start / SIM_FPS))
     held = np.zeros(count, dtype=bool)
@@ -424,6 +550,7 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
         shares[vertex] = binding['weights']
     write(mesh, 'dd_pinned', 'BOOLEAN', 'POINT', held)
     write(mesh, 'dd_tacked', 'BOOLEAN', 'POINT', tacked)
+    write(mesh, 'dd_hold', 'BOOLEAN', 'POINT', np.zeros(count, dtype=bool))
     write(mesh, 'dd_pin_target', 'FLOAT_VECTOR', 'POINT', start)
     write(mesh, 'dd_start_position', 'FLOAT_VECTOR', 'POINT', start)
     write(mesh, 'dd_tack_vertices', 'FLOAT_VECTOR', 'POINT', surface)
@@ -445,9 +572,13 @@ def attach(context, obj, doc, panels, pieces, maps, plan, pinned, tacks):
     collider = bake_collider(context)
     set_input(obj, 'Body', collider)
     if mod is not None:
+        proxy, gap = bake_proxy(context, collider)
+        set_input(obj, 'Body Proxy', proxy)
+        write(mesh, 'dd_body_gate', 'FLOAT', 'POINT', np.full(count, gap + margin / xpbd_nodes.ALIGNED + GATE_PAD / unit))
         set_input(obj, 'Body Shell', bake_shell(context, collider))
     set_input(obj, 'Gravity', tuple(component / unit for component in scene.gravity))
     set_input(obj, 'Inner Substeps', LIVE_SUBSTEPS)
+    set_input(obj, 'Self Contact', scene.dd_self_collision)
     set_input(obj, 'Grab Stride', GRAB_STRIDE / unit)
     set_input(obj, 'Grab Reach', GRAB_REACH / unit)
     if mod is None:

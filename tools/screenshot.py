@@ -9,7 +9,7 @@ from PIL import Image
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.workspace import blender_path, prepare_scratch
+from tools.workspace import blender_path, child_environment, prepare_scratch
 from tools.check_comments import check_source
 
 def capture(output_name="screenshot_app.png", full_mode=False,
@@ -173,7 +173,7 @@ with bpy.context.temp_override(area=area, region=region):
     
     cmd = [blender_path(), "--factory-startup", "--python", str(tmp_script)]
     print("Launching Blender to capture the interface (splash disabled, clean viewport)...")
-    res = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+    res = subprocess.run(cmd, capture_output=True, text=True, env=child_environment())
     
     if not full_path.exists():
         print("Failed to capture screenshot. Blender output:")

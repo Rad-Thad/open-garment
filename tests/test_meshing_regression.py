@@ -2,7 +2,8 @@ import hashlib
 import json
 import unittest
 from devil_designer.core import Document, Session
-from devil_designer.meshing import edge_counts
+import math
+from devil_designer.meshing import MIN_SAMPLE_GAP, edge_counts
 from devil_designer.starters import (
     create_tee_starter,
     create_tank_starter,
@@ -47,33 +48,33 @@ BASELINE = {
     },
     'skirt': {
         'Skirt front': {
-            'n_verts': 788,
-            'n_faces': 1471,
-            'n_uvs': 4413,
-            'sha256': '87926d2309767aecbdffe510854140f6f1400f9297af37c871a194fe187abdd4',
+            'n_verts': 815,
+            'n_faces': 1522,
+            'n_uvs': 4566,
+            'sha256': '617c51b8dfc432eaec2ea0c8a474bfc321e7dc206b51050a50002eccb858d3e0',
         },
         'Skirt back': {
-            'n_verts': 788,
-            'n_faces': 1471,
-            'n_uvs': 4413,
-            'sha256': 'b0f12f17a198a78459df313c26c17df71a9ccc4b62b3dc45dd9ac516c1230cec',
+            'n_verts': 815,
+            'n_faces': 1522,
+            'n_uvs': 4566,
+            'sha256': '552985563a2f1939d2b5dd05912a6425ce33cdb8367662da9ef0b67edcbfcec0',
         },
     },
     'ellipse': {
         'Ellipse': {
-            'n_verts': 459,
-            'n_faces': 796,
-            'n_uvs': 2388,
-            'sha256': '4b2c06e9564c43edbba7c2420ca55d2786983462b5d20dd76a091c9cc74c6e22',
+            'n_verts': 403,
+            'n_faces': 740,
+            'n_uvs': 2220,
+            'sha256': '430749b434ea522d602343952a34d3a52e2b45cd7539e6e41b03cb278debd067',
         },
     },
     'large': {'Large': {'n_verts': 11856, 'n_faces': 23266, 'n_uvs': 69798, 'sha256': 'fd99a9eb179c2c35149a24f41c348a2416554a141fb8dd42608133d5dcb01671'}},
     'legacy': {
         'Legacy panel': {
-            'n_verts': 437,
-            'n_faces': 770,
-            'n_uvs': 2310,
-            'sha256': '34d40d375a4ec934906b470997d2f7a65b23f8f59b074c7a275b031a19cbe882',
+            'n_verts': 415,
+            'n_faces': 748,
+            'n_uvs': 2244,
+            'sha256': '7ea3a959d29da95af8262854895630d4662b818ac01799f7da65f20c088fcba8',
         },
     },
 }
@@ -140,6 +141,18 @@ class MeshingRegressionTests(unittest.TestCase):
         self.assertEqual(p.vertices[2].point_type, 'SMOOTH')
         self.assertEqual(p.vertices[3].point_type, 'SMOOTH')
         self.assertEqual(p.vertices[4].point_type, 'CORNER')
+
+    def test_curved_edges_keep_samples_apart(self):
+        for spacing in (0.01, 0.02):
+            for name, doc in get_saved_designs().items():
+                plan = edge_counts(doc, spacing)
+                for edge, fractions in plan.samples.items():
+                    start, end = doc.edge_vertices(edge)
+                    if start.outgoing is None and end.incoming is None:
+                        continue
+                    points = [doc.edge_point(edge, fraction) for fraction in fractions]
+                    shortest = min(math.dist(a, b) for a, b in zip(points, points[1:]))
+                    self.assertGreater(shortest, MIN_SAMPLE_GAP * spacing * .5, f'{name} {spacing}')
 
     @unittest.skipUnless(bpy is not None, 'Requires Blender')
     def test_meshing_output_matches_baseline(self):

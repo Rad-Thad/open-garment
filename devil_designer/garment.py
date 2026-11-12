@@ -19,6 +19,8 @@ QUAD_SHAPE_ANGLE = math.radians(40)
 
 OWNER = "Artbyo3/DEVIL-DESIGNER"
 LIVE_FRAMES = 1000000
+NO_TORSO_AT_SIMULATE = ('This avatar has no torso surface for the cloth to rest on, so it would fall through. '
+                        'Choose a full body, or add a Collision modifier to its outfit, then Simulate again.')
 
 
 def lock_timeline(scene):
@@ -82,16 +84,28 @@ def stop(context):
         bpy.ops.screen.animation_cancel(restore_frame=False)
 
 
+def drape_playing(context):
+    screen = context.screen
+    return bool(screen and screen.is_animation_playing and any(not obj.hide_get() for obj in generated(context.scene,'simulation')))
+
+
 def remember_drape(context):
     global _carried_drape
     scene = context.scene
     simulations = generated(scene,'simulation')
     if not simulations or simulations[0].hide_get():
         return
-    from . import piece_states
+    from . import piece_states,xpbd_live
     poses = piece_states.snapshot(context,generated(scene,'panel'))
     if poses:
-        _carried_drape = dict(scene=scene.name,avatar=scene.dd_avatar.name if scene.dd_avatar else '',poses=poses)
+        _carried_drape = dict(scene=scene.name,avatar=scene.dd_avatar.name if scene.dd_avatar else '',poses=poses,pins=xpbd_live.pin_records(simulations[0]))
+
+
+def carried_drape(scene):
+    carried = _carried_drape
+    if carried is None or carried['scene']!=scene.name or carried['avatar']!=(scene.dd_avatar.name if scene.dd_avatar else ''):
+        return None
+    return carried
 
 
 def forget_drape():
@@ -100,17 +114,18 @@ def forget_drape():
 
 
 def restore_drape(scene,obj,panels):
-    carried = _carried_drape
+    carried = carried_drape(scene)
     forget_drape()
-    if carried is None or carried['scene']!=scene.name or carried['avatar']!=(scene.dd_avatar.name if scene.dd_avatar else ''):
+    if carried is None:
         return
-    from . import piece_states
+    from . import piece_states,xpbd_live
     rests = {panel['dd_pattern_id']:[tuple(item.vector) for item in panel.data.attributes['dd_rest'].data] for panel in panels}
     for identity,indices in piece_states.piece_indices(obj).items():
         if identity in carried['poses']:
             for index,point in zip(indices,piece_states.carry(*carried['poses'][identity],rests[identity])):
                 obj.data.vertices[index].co = point
     obj.data.update()
+    xpbd_live.carry_pins(obj,carried['pins'])
     xpbd.restart_from_pose(obj)
 
 
@@ -364,6 +379,9 @@ def require_body(scene):
 
 def compile_garment(context):
     scene = context.scene
+    if scene.dd_avatar is not None:
+        from . import live_panels
+        live_panels.sync(context)
     lock_timeline(scene)
     try:
         return build_simulation(context)
@@ -373,6 +391,7 @@ def compile_garment(context):
         raise
 
 
+@build_guard
 def build_simulation(context):
     scene = context.scene
     doc = document(scene)
@@ -390,7 +409,7 @@ def build_simulation(context):
     marker = signature(scene,panels)
     old = generated(scene,'simulation')
     old_anchors=generated(scene,'anchor')+generated(scene,'collider')
-    if old and old[0].get('dd_signature')==marker:
+    if old and old[0].get('dd_signature')==marker and xpbd.current(old[0]):
         return old[0]
     remember_drape(context)
     stop(context)
@@ -422,6 +441,9 @@ def build_simulation(context):
             highest = max(v.co.y for v in panel.data.vertices)
             pin.extend(offset+v.index for v in panel.data.vertices if highest-v.co.y<.002/metres_per_unit(scene))
     scene.pop('dd_collision_warning',None)
+    from .arrangement import missing_torso
+    if missing_torso(context,layering.collision_bodies(scene),verts):
+        raise ValueError(NO_TORSO_AT_SIMULATE)
     count,depth=body_guard.embedded(context,layering.collision_bodies(scene),verts,metres_per_unit(scene))
     if count:
         scene['dd_collision_warning']=(f'{count} cloth points start inside the body, up to {depth*1000:.0f} mm deep. '
@@ -490,6 +512,19 @@ def keep_drape(context):
     panels = generated(scene,'panel')
     if source.get('dd_signature')!=signature(scene,panels):
         raise ValueError("The patterns or arrangement changed. Reset and simulate the current version first.")
+    require_body(scene)
+    found_locked = 'dd_timeline' in scene
+    lock_timeline(scene)
+    try:
+        return refine_and_keep(context,source)
+    except Exception:
+        if not found_locked:
+            restore_timeline(scene)
+        raise
+
+
+def refine_and_keep(context,source):
+    scene = context.scene
     xpbd.refine(context,source)
     depsgraph = context.evaluated_depsgraph_get()
     mesh = bpy.data.meshes.new_from_object(source.evaluated_get(depsgraph),preserve_all_data_layers=True,depsgraph=depsgraph)

@@ -9,6 +9,7 @@ class OverlayControls:
         saved = tuple(self._scene.dd_ui_rect)
         self.window_rect = saved if saved[2] > 0 and saved[3] > 0 else None
         self.pending_simulation = False
+        self.redrape_after_fit = False
         self.confirm_action = None
         self.confirm_message = ''
         self.numeric = None
@@ -71,7 +72,7 @@ class OverlayControls:
                 history_stack = self.session.redo_stack if action == 'REDO' else self.session.undo_stack
                 if history_stack:
                     self.clear_interaction_references()
-                self.run_edit(lambda: self.session.history(action == 'REDO'), action.title() + '.')
+                self.run_edit(lambda: self.session.history(action == 'REDO', self.apply_pin_step), action.title() + '.')
                 self.sync_selection()
         elif action == 'DELETE_PIECE':
             self.session.corner = None
@@ -102,7 +103,8 @@ class OverlayControls:
         if self.draft and action not in {'FINISH_DRAFT', 'CANCEL_DRAFT', 'UNDO', 'REDO', 'POINT_APPLY'}:
             return 'Finish drawing or cancel before editing other garment data.'
         if action in {'SIMULATE', 'KEEP'}:
-            return self.workflow_blocker('STOP' if action == 'SIMULATE' and bpy.context.screen.is_animation_playing else action)
+            from . import garment
+            return self.workflow_blocker('STOP' if action == 'SIMULATE' and garment.drape_playing(bpy.context) else action)
         selected = self.session.document.find(self.session.selected)
         if action in {'DELETE_PIECE', 'DUPLICATE', 'UNFOLD', 'MIRROR_SEW', 'CUT', 'TRACE', 'PLACE', 'FLIP_H', 'FLIP_V'}:
             if selected is None and not self.session.selected_patterns and not self.session.selected_points and self.session.corner is None:

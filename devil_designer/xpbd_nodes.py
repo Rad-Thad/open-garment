@@ -4,14 +4,27 @@ import bpy
 ASSET_FILE = 'geometry_nodes_dynamics_assets.blend'
 STOCK_GROUPS = ('XPBD Simulation', 'XPBD Solver', 'Gravity', 'Collider', 'Set Friction', 'Set Geometry Tags',
                 'Set Geo Updater - Deform Only')
-GROUP_VERSION = 3
+GROUP_VERSION = 9
 STOCK_PREFIX = 'DD Stock '
 CLOTH_GROUP = 'DD XPBD Cloth'
 SOLVER_GROUP = 'DD XPBD Solver'
 SIMULATION_GROUP = 'DD XPBD Simulation'
 CONTACT_GROUP = 'DD Self Contact'
 GEOMETRY_PATH = 'Cloth/Geometry'
+SIDE_REST = 'dd_side_rest'
+SIDE_SIGN = 'dd_side_sign'
+WORLD_POINT = 'dd_world_point'
+WORLD_NORMAL = 'dd_world_normal'
+SIDE_SIGN_NEXT = 'dd_side_sign_next'
+SIDE_REST_NEXT = 'dd_side_rest_next'
+VELOCITY_NEXT = 'dd_velocity_next'
+SIDE_REACH = 8.0
+SIDE_STEP = 1.0
 SHELL_FRICTION = .5
+ALIGNED = .6
+GRAB_EASE_START = 2.0e-6
+GRAB_EASE_RATE = 15.0
+GRAB_EASE_END = 1.0e-2
 
 
 class Graph:
@@ -109,7 +122,7 @@ def load_stock_groups():
 
 def socket(tree, name, in_out, socket_type, default=None):
     item = tree.interface.new_socket(name, in_out=in_out, socket_type=socket_type)
-    if socket_type in {'NodeSocketFloat', 'NodeSocketInt', 'NodeSocketVector'}:
+    if socket_type in {'NodeSocketFloat', 'NodeSocketInt', 'NodeSocketVector', 'NodeSocketBool'}:
         item.structure_type = 'SINGLE'
     if default is not None:
         item.default_value = default
@@ -124,10 +137,96 @@ def surface_sample(graph, geometry, value, data_type, probe):
     return node.outputs['Value']
 
 
+def store(graph, geometry, data_type, name, value):
+    node = graph.node('GeometryNodeStoreNamedAttribute', geometry, settings={'data_type': data_type, 'domain': 'POINT'}, Name=name)
+    graph.wire(node.inputs['Value'], value)
+    return node.outputs[0]
+
+
+def flat_copy(graph, geometry, position, normal, rest):
+    marked = store(graph, store(graph, geometry, 'FLOAT_VECTOR', WORLD_POINT, position), 'FLOAT_VECTOR', WORLD_NORMAL, normal)
+    return graph.node('GeometryNodeSetPosition', marked, Position=rest).outputs[0]
+
+
+def self_contact(graph, geometry, position, normal, velocity):
+    rest = graph.attribute('dd_rest_position', 'FLOAT_VECTOR')
+    thickness = graph.attribute('dd_self_thickness')
+    weight = graph.attribute('dd_contact_weight')
+    span = graph.math('MULTIPLY', thickness, 3.0)
+    frame = graph.math('MULTIPLY', graph.attribute('dd_frame_time'), 2.0)
+    total = (0.0, 0.0, 0.0)
+    braking = (0.0, 0.0, 0.0)
+    contacts = []
+    for side in (1.0, -1.0):
+        toward = graph.scale(normal, side)
+        probe = graph.vector('ADD', position, graph.scale(toward, span))
+        hit = surface_sample(graph, geometry, position, 'FLOAT_VECTOR', probe)
+        hit_rest = surface_sample(graph, geometry, rest, 'FLOAT_VECTOR', probe)
+        hit_weight = surface_sample(graph, geometry, weight, 'FLOAT', probe)
+        hit_velocity = surface_sample(graph, geometry, velocity, 'FLOAT_VECTOR', probe)
+        hit_normal = graph.vector('NORMALIZE', surface_sample(graph, geometry, normal, 'FLOAT_VECTOR', probe))
+        gap = graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', hit, position), toward)
+        foreign = graph.compare('GREATER_THAN', graph.vector('DISTANCE', hit_rest, rest), graph.math('MULTIPLY', thickness, 4.0))
+        near = graph.compare('LESS_THAN', graph.vector('DISTANCE', hit, probe), graph.math('MULTIPLY', span, .97))
+        facing = graph.logic('AND', graph.logic('AND', foreign, near), graph.compare('GREATER_THAN', hit_weight, .5))
+        inside = graph.compare('LESS_THAN', gap, thickness)
+        depth = graph.math('MULTIPLY', graph.math('SUBTRACT', thickness, gap), .5)
+        push = graph.scale(toward, graph.math('MULTIPLY', depth, -1.0))
+        total = graph.vector('ADD', total, graph.switch('VECTOR', graph.logic('AND', facing, inside), (0.0, 0.0, 0.0), push))
+        closing = graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', velocity, hit_velocity), toward)
+        allowed = graph.math('DIVIDE', graph.math('MAXIMUM', graph.math('SUBTRACT', gap, thickness), 0.0), frame)
+        excess = graph.math('MAXIMUM', graph.math('SUBTRACT', closing, allowed), 0.0)
+        brake = graph.scale(toward, graph.math('MULTIPLY', excess, -.5))
+        braking = graph.vector('ADD', braking, graph.switch('VECTOR', facing, (0.0, 0.0, 0.0), brake))
+        above = graph.compare('GREATER_EQUAL', graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', position, hit), hit_normal), 0.0)
+        contacts.append((facing, hit_rest, graph.switch('FLOAT', above, -1.0, 1.0), graph.vector('DISTANCE', hit, position)))
+    (found_up, rest_up, sign_up, reach_up), (found_down, rest_down, sign_down, reach_down) = contacts
+    prefer_up = graph.logic('AND', found_up, graph.logic('OR', graph.logic('NOT', found_down), graph.compare('LESS_EQUAL', reach_up, reach_down)))
+    found = graph.logic('OR', found_up, found_down)
+    fresh_rest = graph.switch('VECTOR', prefer_up, rest_down, rest_up)
+    fresh_sign = graph.switch('FLOAT', prefer_up, sign_down, sign_up)
+
+    flat = flat_copy(graph, geometry, position, normal, rest)
+    remembered_rest = graph.attribute(SIDE_REST, 'FLOAT_VECTOR')
+    remembered_sign = graph.attribute(SIDE_SIGN)
+    tracked = surface_sample(graph, flat, graph.attribute(WORLD_POINT, 'FLOAT_VECTOR'), 'FLOAT_VECTOR', remembered_rest)
+    tracked_normal = graph.vector('NORMALIZE', surface_sample(graph, flat, graph.attribute(WORLD_NORMAL, 'FLOAT_VECTOR'), 'FLOAT_VECTOR', remembered_rest))
+    tracked_weight = surface_sample(graph, flat, weight, 'FLOAT', remembered_rest)
+    offset = graph.vector('SUBTRACT', position, tracked)
+    height = graph.vector('DOT_PRODUCT', offset, tracked_normal)
+    reach = graph.math('MULTIPLY', thickness, SIDE_REACH)
+    local = graph.compare('LESS_THAN', graph.vector('LENGTH', offset), reach)
+    folded = graph.compare('GREATER_THAN', graph.vector('DISTANCE', remembered_rest, rest), reach)
+    remembered = graph.logic('AND', graph.logic('AND', graph.compare('GREATER_THAN', graph.math('ABSOLUTE', remembered_sign), .5), folded),
+                             graph.logic('AND', graph.compare('GREATER_THAN', tracked_weight, .5), graph.compare('GREATER_THAN', weight, .5)))
+    tracking = graph.logic('AND', remembered, local)
+    crossed = graph.logic('AND', tracking, graph.compare('LESS_THAN', graph.math('MULTIPLY', height, remembered_sign), 0.0))
+    needed = graph.math('SUBTRACT', graph.math('MULTIPLY', remembered_sign, thickness), height)
+    step = graph.math('MULTIPLY', thickness, SIDE_STEP)
+    restore = graph.scale(tracked_normal, graph.node('ShaderNodeClamp', needed, graph.math('MULTIPLY', step, -1.0), step).outputs[0])
+    shift = graph.vector('ADD', graph.scale(total, weight), graph.switch('VECTOR', crossed, (0.0, 0.0, 0.0), restore))
+    across = graph.vector('DOT_PRODUCT', velocity, tracked_normal)
+    wrong_way = graph.logic('AND', crossed, graph.compare('LESS_THAN', graph.math('MULTIPLY', across, remembered_sign), 0.0))
+    settled = graph.vector('SUBTRACT', graph.vector('ADD', velocity, graph.scale(braking, weight)),
+                           graph.switch('VECTOR', wrong_way, (0.0, 0.0, 0.0), graph.scale(tracked_normal, across)))
+    sign = graph.switch('FLOAT', crossed, graph.switch('FLOAT', found, graph.switch('FLOAT', tracking, 0.0, remembered_sign), fresh_sign), remembered_sign)
+    anchor = graph.switch('VECTOR', graph.logic('AND', found, graph.logic('NOT', crossed)), remembered_rest, fresh_rest)
+    remembered_geometry = store(graph, store(graph, geometry, 'FLOAT', SIDE_SIGN_NEXT, sign), 'FLOAT_VECTOR', SIDE_REST_NEXT, anchor)
+    slowed = store(graph, remembered_geometry, 'FLOAT_VECTOR', VELOCITY_NEXT, settled)
+    moved = graph.node('GeometryNodeSetPosition', slowed, Offset=shift).outputs[0]
+    moved = store(graph, moved, 'FLOAT_VECTOR', 'velocity', graph.attribute(VELOCITY_NEXT, 'FLOAT_VECTOR'))
+    moved = store(graph, moved, 'FLOAT', SIDE_SIGN, graph.attribute(SIDE_SIGN_NEXT))
+    moved = store(graph, moved, 'FLOAT_VECTOR', SIDE_REST, graph.attribute(SIDE_REST_NEXT, 'FLOAT_VECTOR'))
+    for name in (SIDE_SIGN_NEXT, SIDE_REST_NEXT, VELOCITY_NEXT):
+        moved = graph.node('GeometryNodeRemoveAttribute', moved, Name=name).outputs[0]
+    return moved
+
 def build_contact_group():
     tree = bpy.data.node_groups.new(CONTACT_GROUP, 'GeometryNodeTree')
     socket(tree, 'Geometry', 'INPUT', 'NodeSocketGeometry')
     socket(tree, 'Body', 'INPUT', 'NodeSocketGeometry')
+    socket(tree, 'Body Proxy', 'INPUT', 'NodeSocketGeometry')
+    socket(tree, 'Self Contact', 'INPUT', 'NodeSocketBool', True)
     socket(tree, 'Geometry', 'OUTPUT', 'NodeSocketGeometry')
     graph = Graph(tree)
     source = tree.nodes.new('NodeGroupInput')
@@ -139,14 +238,21 @@ def build_contact_group():
 
     margin = graph.attribute('dd_body_margin')
     grip = graph.attribute('dd_body_grip')
-    surface = surface_sample(graph, source.outputs['Body'], position, 'FLOAT_VECTOR', position)
-    outward = graph.vector('NORMALIZE', surface_sample(graph, source.outputs['Body'], normal, 'FLOAT_VECTOR', position))
+    proxy = source.outputs['Body Proxy']
+    rough = surface_sample(graph, proxy, position, 'FLOAT_VECTOR', position)
+    rough_outward = graph.vector('NORMALIZE', surface_sample(graph, proxy, normal, 'FLOAT_VECTOR', position))
+    clear = graph.compare('GREATER_THAN', graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', position, rough), rough_outward),
+                          graph.attribute('dd_body_gate'))
+    probe = graph.switch('VECTOR', clear, position, rough)
+    surface = surface_sample(graph, source.outputs['Body'], position, 'FLOAT_VECTOR', probe)
+    outward = graph.vector('NORMALIZE', surface_sample(graph, source.outputs['Body'], normal, 'FLOAT_VECTOR', probe))
     away = graph.vector('SUBTRACT', position, surface)
     height = graph.vector('DOT_PRODUCT', away, outward)
     reach = graph.vector('LENGTH', away)
-    aligned = graph.compare('GREATER_THAN', graph.math('ABSOLUTE', height), graph.math('MULTIPLY', reach, .6))
+    aligned = graph.compare('GREATER_THAN', graph.math('ABSOLUTE', height), graph.math('MULTIPLY', reach, ALIGNED))
     close = graph.compare('LESS_THAN', reach, margin)
-    touching = graph.logic('AND', graph.compare('LESS_THAN', height, margin), graph.logic('OR', aligned, close))
+    touching = graph.logic('AND', graph.logic('NOT', clear),
+                           graph.logic('AND', graph.compare('LESS_THAN', height, margin), graph.logic('OR', aligned, close)))
     step = graph.math('MINIMUM', graph.math('SUBTRACT', margin, height), graph.attribute('dd_body_step'))
     lift = graph.scale(outward, step)
     speed = graph.vector('DOT_PRODUCT', velocity, outward)
@@ -161,37 +267,8 @@ def build_contact_group():
     odd = graph.compare('GREATER_THAN', graph.math('FLOORED_MODULO', frame_number, 2.0), .5)
     body_stage = graph.switch('GEOMETRY', odd, geometry, stored.outputs[0])
 
-    rest = graph.attribute('dd_rest_position', 'FLOAT_VECTOR')
-    thickness = graph.attribute('dd_self_thickness')
-    weight = graph.attribute('dd_contact_weight')
-    span = graph.math('MULTIPLY', thickness, 3.0)
-    frame = graph.math('MULTIPLY', graph.attribute('dd_frame_time'), 2.0)
-    total = (0.0, 0.0, 0.0)
-    braking = (0.0, 0.0, 0.0)
-    for side in (1.0, -1.0):
-        toward = graph.scale(normal, side)
-        probe = graph.vector('ADD', position, graph.scale(toward, span))
-        hit = surface_sample(graph, geometry, position, 'FLOAT_VECTOR', probe)
-        hit_rest = surface_sample(graph, geometry, rest, 'FLOAT_VECTOR', probe)
-        hit_weight = surface_sample(graph, geometry, weight, 'FLOAT', probe)
-        hit_velocity = surface_sample(graph, geometry, velocity, 'FLOAT_VECTOR', probe)
-        gap = graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', hit, position), toward)
-        foreign = graph.compare('GREATER_THAN', graph.vector('DISTANCE', hit_rest, rest), graph.math('MULTIPLY', thickness, 4.0))
-        near = graph.compare('LESS_THAN', graph.vector('DISTANCE', hit, probe), graph.math('MULTIPLY', span, .97))
-        facing = graph.logic('AND', graph.logic('AND', foreign, near), graph.compare('GREATER_THAN', hit_weight, .5))
-        inside = graph.compare('LESS_THAN', gap, thickness)
-        depth = graph.math('MULTIPLY', graph.math('SUBTRACT', thickness, gap), .5)
-        push = graph.scale(toward, graph.math('MULTIPLY', depth, -1.0))
-        total = graph.vector('ADD', total, graph.switch('VECTOR', graph.logic('AND', facing, inside), (0.0, 0.0, 0.0), push))
-        closing = graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', velocity, hit_velocity), toward)
-        allowed = graph.math('DIVIDE', graph.math('MAXIMUM', graph.math('SUBTRACT', gap, thickness), 0.0), frame)
-        excess = graph.math('MAXIMUM', graph.math('SUBTRACT', closing, allowed), 0.0)
-        brake = graph.scale(toward, graph.math('MULTIPLY', excess, -.5))
-        braking = graph.vector('ADD', braking, graph.switch('VECTOR', facing, (0.0, 0.0, 0.0), brake))
-    moved = graph.node('GeometryNodeSetPosition', geometry, Offset=graph.scale(total, weight)).outputs[0]
-    slowed_cloth = graph.node('GeometryNodeStoreNamedAttribute', moved, settings={'data_type': 'FLOAT_VECTOR', 'domain': 'POINT'}, Name='velocity')
-    graph.wire(slowed_cloth.inputs['Value'], graph.vector('ADD', velocity, graph.scale(braking, weight)))
-    moved = graph.switch('GEOMETRY', odd, slowed_cloth.outputs[0], body_stage)
+    contact_stage = graph.switch('GEOMETRY', source.outputs['Self Contact'], geometry, self_contact(graph, geometry, position, normal, velocity))
+    moved = graph.switch('GEOMETRY', odd, contact_stage, body_stage)
 
     partner = graph.attribute('dd_partner', 'INT')
     across = graph.node('GeometryNodeFieldAtIndex', settings={'data_type': 'FLOAT_VECTOR', 'domain': 'POINT'})
@@ -216,6 +293,8 @@ def build_solver_group(contact):
     tree.name = SOLVER_GROUP
     socket(tree, 'Inner Substeps', 'INPUT', 'NodeSocketInt', 4)
     socket(tree, 'Body', 'INPUT', 'NodeSocketGeometry')
+    socket(tree, 'Body Proxy', 'INPUT', 'NodeSocketGeometry')
+    socket(tree, 'Self Contact', 'INPUT', 'NodeSocketBool', True)
     nodes = tree.nodes
     nodes['Switch'].inputs['Switch'].default_value = True
     step = nodes['XPBD Solver Test Wrapper.001']
@@ -228,6 +307,8 @@ def build_solver_group(contact):
     solved = graph.group(contact)
     tree.links.new(fetched.outputs['Item'], solved.inputs['Geometry'])
     tree.links.new(source.outputs['Body'], solved.inputs['Body'])
+    tree.links.new(source.outputs['Body Proxy'], solved.inputs['Body Proxy'])
+    tree.links.new(source.outputs['Self Contact'], solved.inputs['Self Contact'])
     stored = graph.node('NodeStoreBundleItem', settings={'socket_type': 'GEOMETRY'}, Path=GEOMETRY_PATH)
     tree.links.new(step.outputs['World'], stored.inputs['Bundle'])
     tree.links.new(solved.outputs['Geometry'], stored.inputs['Item'])
@@ -240,11 +321,15 @@ def build_simulation_group(solver):
     tree.name = SIMULATION_GROUP
     socket(tree, 'Inner Substeps', 'INPUT', 'NodeSocketInt', 4)
     socket(tree, 'Body', 'INPUT', 'NodeSocketGeometry')
+    socket(tree, 'Body Proxy', 'INPUT', 'NodeSocketGeometry')
+    socket(tree, 'Self Contact', 'INPUT', 'NodeSocketBool', True)
     node = tree.nodes['XPBD Solver']
     node.node_tree = solver
     source = tree.nodes.new('NodeGroupInput')
     tree.links.new(source.outputs['Inner Substeps'], node.inputs['Inner Substeps'])
     tree.links.new(source.outputs['Body'], node.inputs['Body'])
+    tree.links.new(source.outputs['Body Proxy'], node.inputs['Body Proxy'])
+    tree.links.new(source.outputs['Self Contact'], node.inputs['Self Contact'])
     return tree
 
 
@@ -255,17 +340,22 @@ def build_cloth_group(simulation):
     socket(tree, 'Geometry', 'INPUT', 'NodeSocketGeometry')
     socket(tree, 'Body', 'INPUT', 'NodeSocketObject')
     socket(tree, 'Body Shell', 'INPUT', 'NodeSocketObject')
+    socket(tree, 'Body Proxy', 'INPUT', 'NodeSocketObject')
+    socket(tree, 'Self Contact', 'INPUT', 'NodeSocketBool', True)
     socket(tree, 'Grab Handle', 'INPUT', 'NodeSocketObject')
     socket(tree, 'Grab Index', 'INPUT', 'NodeSocketInt', -1)
     socket(tree, 'Grab Radius', 'INPUT', 'NodeSocketFloat', .05)
     socket(tree, 'Grab Stride', 'INPUT', 'NodeSocketFloat', .015)
     socket(tree, 'Grab Reach', 'INPUT', 'NodeSocketFloat', .12)
+    socket(tree, 'Grab Release', 'INPUT', 'NodeSocketFloat', -1.0)
+    socket(tree, 'Brush Start', 'INPUT', 'NodeSocketVector', (0.0, 0.0, 0.0))
+    socket(tree, 'Brush End', 'INPUT', 'NodeSocketVector', (0.0, 0.0, 0.0))
+    socket(tree, 'Brush Shape', 'INPUT', 'NodeSocketVector', (.05, 0.0, 0.0))
     socket(tree, 'Contact Passes', 'INPUT', 'NodeSocketInt', 1)
     socket(tree, 'Inner Substeps', 'INPUT', 'NodeSocketInt', 12)
     socket(tree, 'Iterations', 'INPUT', 'NodeSocketInt', 2)
     socket(tree, 'Seam Seconds', 'INPUT', 'NodeSocketFloat', .8)
     socket(tree, 'Gravity', 'INPUT', 'NodeSocketVector', (0.0, 0.0, -9.81))
-    socket(tree, 'Damping', 'INPUT', 'NodeSocketFloat', 1.0)
     socket(tree, 'Geometry', 'OUTPUT', 'NodeSocketGeometry')
     graph = Graph(tree)
     source = tree.nodes.new('NodeGroupInput')
@@ -314,7 +404,7 @@ def build_cloth_group(simulation):
     graph.wire(goal.inputs['Value'], anchor)
     tagged = graph.group(stock_group('Set Geometry Tags'), Geometry=goal.outputs[0], Tags='').outputs[0]
     gripping = graph.group(stock_group('Set Friction'), Geometry=tagged, Static=SHELL_FRICTION, Dynamic=SHELL_FRICTION).outputs[0]
-    updated = graph.group(stock_group('Set Geo Updater - Deform Only'), Geometry=gripping, Extra_Sim_Attributes='').outputs[0]
+    updated = graph.group(stock_group('Set Geo Updater - Deform Only'), Geometry=gripping, Extra_Sim_Attributes=SIDE_SIGN + ',' + SIDE_REST).outputs[0]
 
     handle = graph.node('GeometryNodeObjectInfo', out['Grab Handle'], settings={'transform_space': 'RELATIVE'}).outputs['Location']
     grabbed = graph.node('GeometryNodeFieldAtIndex', settings={'data_type': 'FLOAT_VECTOR', 'domain': 'POINT'})
@@ -331,20 +421,41 @@ def build_cloth_group(simulation):
     distance_to_hand = graph.vector('LENGTH', reach)
     grip = graph.node('ShaderNodeClamp', graph.math('SUBTRACT', 1.0, graph.math('DIVIDE', distance_to_hand, graph.math('MAXIMUM', out['Grab Reach'], .001))), 0.0, 1.0).outputs[0]
     stride = graph.math('MULTIPLY', graph.math('MINIMUM', distance_to_hand, out['Grab Stride']), grip)
-    pull = graph.scale(graph.vector('NORMALIZE', reach), graph.math('MULTIPLY', stride, smooth))
-    held = graph.logic('AND', graph.compare('GREATER_EQUAL', out['Grab Index'], 0, 'INT'), graph.compare('GREATER_THAN', smooth, .001))
+    since_release = graph.math('SUBTRACT', seconds, out['Grab Release'])
+    gripping = graph.compare('LESS_THAN', out['Grab Release'], 0.0)
+    slack = graph.math('MULTIPLY', graph.math('EXPONENT', graph.math('MULTIPLY', since_release, GRAB_EASE_RATE)), GRAB_EASE_START)
+    easing = graph.logic('AND', graph.compare('GREATER_EQUAL', since_release, 0.0), graph.compare('LESS_THAN', slack, GRAB_EASE_END))
+    pull = graph.scale(graph.vector('NORMALIZE', reach), graph.math('MULTIPLY', graph.math('MULTIPLY', stride, smooth), graph.switch('FLOAT', gripping, 0.0, 1.0)))
+    held = graph.logic('AND', graph.logic('AND', graph.compare('GREATER_EQUAL', out['Grab Index'], 0, 'INT'), graph.compare('GREATER_THAN', smooth, .001)),
+                       graph.logic('OR', gripping, easing))
     pinned = graph.attribute('dd_pinned', 'BOOLEAN')
+    brush_radius, brush_gain, brush_sweep = graph.node('ShaderNodeSeparateXYZ', out['Brush Shape']).outputs[:3]
+    stroke = graph.vector('SUBTRACT', out['Brush End'], out['Brush Start'])
+    along = graph.math('DIVIDE', graph.vector('DOT_PRODUCT', graph.vector('SUBTRACT', position, out['Brush Start']), stroke),
+                       graph.math('MAXIMUM', graph.vector('DOT_PRODUCT', stroke, stroke), 1e-9))
+    nearest = graph.vector('ADD', out['Brush Start'], graph.scale(stroke, graph.node('ShaderNodeClamp', along, 0.0, 1.0).outputs[0]))
+    cover = graph.math('MAXIMUM', graph.math('SUBTRACT', 1.0, graph.math('DIVIDE', graph.vector('DISTANCE', position, nearest),
+                                                                         graph.math('MAXIMUM', brush_radius, .001))), 0.0)
+    blend = graph.math('MULTIPLY', graph.math('MULTIPLY', cover, cover), graph.math('SUBTRACT', 3.0, graph.math('MULTIPLY', cover, 2.0)))
+    toward = graph.vector('SUBTRACT', nearest, position)
+    axis = graph.vector('NORMALIZE', stroke)
+    sideways = graph.vector('SUBTRACT', toward, graph.scale(axis, graph.vector('DOT_PRODUCT', toward, axis)))
+    gather = graph.switch('VECTOR', graph.compare('GREATER_THAN', brush_sweep, .5), sideways, graph.vector('SUBTRACT', out['Brush End'], nearest))
+    brushed = graph.logic('AND', graph.logic('NOT', pinned),
+                          graph.logic('AND', graph.compare('GREATER_THAN', brush_gain, 0.0), graph.compare('GREATER_THAN', blend, 0.0)))
+    shaped = graph.vector('ADD', position, graph.scale(gather, graph.math('MULTIPLY', blend, brush_gain)))
     pins = graph.bundle((('Type', 'STRING', 'Blender.Constraint.PinPosition'), ('filter', 'STRING', ''),
-                         ('selection', 'BOOLEAN', graph.logic('OR', pinned, held)),
-                         ('position', 'VECTOR', graph.switch('VECTOR', held, anchor, graph.vector('ADD', position, pull))),
-                         ('compliance', 'FLOAT', graph.switch('FLOAT', held, graph.attribute('dd_pin_compliance'), 0.0)),
+                         ('selection', 'BOOLEAN', graph.logic('OR', graph.logic('OR', pinned, held), brushed)),
+                         ('position', 'VECTOR', graph.switch('VECTOR', held, graph.switch('VECTOR', brushed, anchor, shaped), graph.vector('ADD', position, pull))),
+                         ('compliance', 'FLOAT', graph.switch('FLOAT', held, graph.switch('FLOAT', brushed, graph.attribute('dd_pin_compliance'), 0.0),
+                                                              graph.switch('FLOAT', gripping, slack, 0.0))),
                          ('error_threshold', 'FLOAT', .001), ('lambda_attribute', 'STRING', '')))
 
     settling = graph.math('SUBTRACT', progress, 1.0)
     ramp = graph.node('ShaderNodeClamp', settling, 0.0, 1.0).outputs[0]
     gravity = graph.group(stock_group('Gravity'), Gravity=graph.scale(out['Gravity'], ramp)).outputs[0]
     damping = graph.bundle((('Type', 'STRING', 'Blender.Damping'), ('filter', 'STRING', ''),
-                            ('linear_damping', 'FLOAT', out['Damping']), ('angular_damping', 'FLOAT', 1.0)))
+                            ('linear_damping', 'FLOAT', graph.attribute('dd_damping')), ('angular_damping', 'FLOAT', 1.0)))
     shell = graph.node('GeometryNodeObjectInfo', out['Body Shell'], settings={'transform_space': 'RELATIVE'}).outputs['Geometry']
     collider = graph.group(stock_group('Collider'), Geometry=shell, Friction=SHELL_FRICTION).outputs['Collider']
     cloth = graph.bundle((('Geometry', 'GEOMETRY', updated), ('Edge Length', 'BUNDLE', edge), ('Cross Edge Length', 'BUNDLE', bend),
@@ -352,7 +463,8 @@ def build_cloth_group(simulation):
                           ('Shell', 'BUNDLE', collider)))
     world = graph.bundle((('Cloth', 'BUNDLE', cloth),))
 
-    solved = graph.group(simulation, World=world, Substeps=out['Contact Passes'], Inner_Substeps=out['Inner Substeps'], Body=body,
+    proxy = graph.node('GeometryNodeObjectInfo', out['Body Proxy'], settings={'transform_space': 'RELATIVE'}).outputs['Geometry']
+    solved = graph.group(simulation, World=world, Substeps=out['Contact Passes'], Inner_Substeps=out['Inner Substeps'], Body=body, Body_Proxy=proxy, Self_Contact=out['Self Contact'],
                          Constraint_Steps=out['Iterations'], Time_Scale=1.0, Solver_Output_Path='SolverData')
     result = graph.node('NodeGetBundleItem', settings={'socket_type': 'GEOMETRY'}, Path=GEOMETRY_PATH)
     tree.links.new(solved.outputs['World'], result.inputs['Bundle'])

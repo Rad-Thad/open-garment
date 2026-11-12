@@ -3,6 +3,8 @@ import hashlib
 import math
 from . import curves
 
+MINIMUM_DART_DEPTH=.005
+
 class ConstructionMixin:
     def knife_preview(self,points):
         points=[(point.x,point.y) if hasattr(point,'x') else tuple(point) for point in points]
@@ -375,6 +377,9 @@ class ConstructionMixin:
             for seam in self.document.seams:
                 seam.chain_a=tuple(remap(e) for e in seam.side(0));seam.chain_b=tuple(remap(e) for e in seam.side(1))
                 seam.a,seam.b=seam.chain_a[0],seam.chain_b[0]
+            for record in self.document.elastics:
+                moved=remap(EdgeRef(record['pattern'],record['start'],record['end'],path=record['path']))
+                record.update(pattern=moved.pattern,start=moved.start,end=moved.end,path=moved.path)
             for anchor in self.document.anchors:
                 if anchor.pattern==p.id and not p.contains((anchor.x,anchor.y)):anchor.pattern=new.id
         result=self.commit(apply);self.path='OUTER';self.corner=None;return result
@@ -386,6 +391,7 @@ class ConstructionMixin:
         if end-start<.001:raise ValueError('Give the dart a nonzero mouth width.')
         p=self.document.find(edge.pattern)
         if not p.contains(apex):raise ValueError('Place the dart apex inside the pattern.')
+        if curves.closest_fraction(self.document.edge_curve(edge),apex)[1]<MINIMUM_DART_DEPTH:raise ValueError('The dart apex is on the dart mouth, so the dart would have no depth. Click at least 5 mm inside the pattern.')
         def apply():
             a,b=self.document.edge_vertices(edge)
             base_b=b if end>1-1e-8 else self.document.split_edge(edge,end)
@@ -470,6 +476,27 @@ def _cut_intersection(start,end,cut_start,cut_end):
     return None
 
 
+def ordered_sewing_chain(document,chain):
+    if not chain:raise ValueError('Click at least one edge first.')
+    first=chain[0]
+    if any(edge.pattern!=first.pattern or edge.path!=first.path for edge in chain):
+        raise ValueError('Each sewing side must follow one connected path.')
+    edges=document.edges(first.pattern,first.path)
+    selected={edge.full() for edge in chain}
+    if len(selected)!=len(chain) or not selected.issubset(set(edges)):
+        raise ValueError('Choose each edge once on one connected path.')
+    path=document.find(first.pattern).path(first.path)
+    closed=first.path=='OUTER' or path.closed
+    starts=[i for i,edge in enumerate(edges) if edge in selected and
+            (i==0 and not closed or edges[(i-1)%len(edges)] not in selected)]
+    if not starts and len(selected)==len(edges):starts=[0]
+    if len(starts)!=1:raise ValueError('Select contiguous edges on each sewing side.')
+    start=starts[0]
+    ordered=[edges[(start+i)%len(edges)] for i in range(len(chain))]
+    if set(ordered)!=selected:raise ValueError('Select contiguous edges on each sewing side.')
+    return ordered
+
+
 def chain_range(document,chain,start,end):
     from .core import EdgeRef
     if not 0<=start<=1 or not 0<=end<=1 or abs(start-end)<1e-8:raise ValueError('Use a nonzero sewing range between 0 and 100 percent.')
@@ -478,7 +505,7 @@ def chain_range(document,chain,start,end):
     for edge in chain:
         length=document.edge_length(edge);lo=max(low*total,at);hi=min(high*total,at+length)
         if hi-lo>1e-10:
-            a=(lo-at)/length;b=(hi-at)/length
+            a=min(1.0,max(0.0,(lo-at)/length));b=min(1.0,max(0.0,(hi-at)/length))
             result.append(EdgeRef(edge.pattern,edge.start,edge.end,edge.t0+(edge.t1-edge.t0)*a,
                                   edge.t0+(edge.t1-edge.t0)*b,edge.path))
         at+=length

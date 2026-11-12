@@ -1,5 +1,6 @@
 import json
 import math
+from contextlib import contextmanager
 from functools import wraps
 import bpy
 from bpy.app.handlers import persistent
@@ -11,13 +12,18 @@ from .panel_cache import wrapped_positions
 _busy=False
 
 
+@contextmanager
+def quiet():
+    global _busy
+    previous=_busy;_busy=True
+    try:yield
+    finally:_busy=previous
+
+
 def build_guard(operation):
     @wraps(operation)
     def guarded(*args,**kwargs):
-        global _busy
-        previous=_busy;_busy=True
-        try:return operation(*args,**kwargs)
-        finally:_busy=previous
+        with quiet():return operation(*args,**kwargs)
     return guarded
 
 
@@ -261,7 +267,7 @@ def avatar_signature(context):
     avatar=context.scene.dd_avatar
     if avatar is None:return ''
     evaluated=avatar.evaluated_get(context.evaluated_depsgraph_get())
-    return json.dumps([avatar.as_pointer(),[list(row) for row in evaluated.matrix_world],
+    return json.dumps([avatar.name_full,avatar.data.name_full if avatar.data else '',[list(row) for row in evaluated.matrix_world],
                        [list(point) for point in evaluated.bound_box],
                        context.scene.dd_clearance],separators=(',',':'))+chr(10)+avatar.get('dd_arrangement_volumes','')
 
@@ -427,7 +433,12 @@ def fit_completed(job):
     except (ValueError,RuntimeError,ReferenceError) as failure:
         message=str(failure)
     active=editor._active
-    if active is not None and active._scene==scene:active.message=message
+    if active is not None and active._scene==scene:
+        active.message=message
+        if job.state=='ready' and active.redrape_after_fit:
+            active.redrape_after_fit=False
+            active.perform_action('SIMULATE')
+            active.message=('Garment refit and re-draped on '+job.avatar.name+'. '+active.message).strip()
     for window in getattr(context.window_manager,'windows',()):
         for area in window.screen.areas:
             if area.type=='VIEW_3D':area.tag_redraw()

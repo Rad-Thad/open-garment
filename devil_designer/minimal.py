@@ -80,6 +80,7 @@ QUALITY = {'Draft': 12, 'Standard': 24, 'High': 36}
 THICKNESS = {'None': 0, 'Thin': .0005, 'Standard': .001}
 FABRICS = ('COTTON', 'LINEN', 'DENIM', 'SILK', 'LEATHER', 'KNIT')
 GUIDE_OPACITY = {'Light': .15, 'Medium': .30, 'Strong': .50}
+SHOWN = ('Shown', 'Hidden')
 PLACEMENT_DISTANCE = {'Body': None, '1 cm': .01, '2 cm': .02, '5 cm': .05}
 PLACEMENT_OVERLAP = {'Off': (False, 1), 'Right on top': (True, 1), 'Left on top': (True, -1)}
 IMAGE_OPACITY = {'Light': .2, 'Medium': .35, 'Strong': .6}
@@ -176,7 +177,6 @@ class MinimalCards:
         self.library_load_path = None
         self.library_load_signature = None
         self.library_error = ''
-        self._scene.dd_reference_visible = False
         self._scene.dd_fabric = getattr(self.session.document, 'preset', 'COTTON')
         self.sync_fabric_settings(self._scene.dd_fabric)
         self.draw_shape = 'RECTANGLE'
@@ -435,7 +435,9 @@ class MinimalCards:
         elif kind == 'BODY':
             title = 'Body'
             rows = [('AVATAR_FIELD', LABEL)]
+            rows.append(('CHOICES', 'Silhouette', ('INSP_SILHOUETTE', SHOWN, SHOWN[not scene.dd_reference_visible])))
             rows.append(('CHOICES', 'Body opacity', ('INSP_OPACITY', GUIDE_OPACITY, self.named_choice(scene.dd_reference_opacity, GUIDE_OPACITY))))
+            rows.append(('CHOICES', 'Arrangement points', ('INSP_POINTS', SHOWN, SHOWN[not scene.dd_points_visible])))
             measurements = getattr(getattr(self, 'reference', None), 'measurements', None)
             if measurements:
                 rows.append(('INFO', 'Height', f"{measurements['height']:.1f} cm"))
@@ -498,11 +500,12 @@ class MinimalCards:
             rows.append(('MENU_LIBRARY','Back to library',''))
         elif kind == 'SIMULATE':
             title = 'Simulate'
-            self.card_models = layering.kept_garments(scene)
+            layers = layering.worn_garments(scene)
+            self.card_models = [obj for obj,enabled in layers]
             self.wear_over_offset = max(0,min(self.wear_over_offset,len(self.card_models)-5))
             rows = [('RESET', 'Reset drape', 'Back to panels')]
-            rows += [('WEAR_OVER_' + str(index), obj.name, 'On' if obj.get('dd_wear_over',True) else 'Off')
-                     for index,obj in enumerate(self.card_models) if self.wear_over_offset <= index < self.wear_over_offset+5]
+            rows += [('WEAR_OVER_' + str(index), obj.name, 'On' if enabled else 'Off')
+                     for index,(obj,enabled) in enumerate(layers) if self.wear_over_offset <= index < self.wear_over_offset+5]
             if len(self.card_models)>5:
                 rows.append(('SCROLL_WEAR_OVER',f'{self.wear_over_offset+1}-{min(self.wear_over_offset+5,len(self.card_models))} of {len(self.card_models)} garments','Next'))
         elif kind == 'KEEP':
@@ -795,7 +798,7 @@ class MinimalCards:
                     ('INFO', 'Scale only', 'Cannot correct photo distortion')]
         elif kind == 'TRACE_POSITION':
             title = 'Image placement'
-            rows = [('TRACE_DRAG', 'Move on canvas', 'Drag the image'),
+            rows = [('TRACE_DRAG', 'Place on canvas', 'Drag, corners scale, knob rotates'),
                     ('SLIDER', 'dd_trace_width', 'Width'), ('SLIDER', 'dd_trace_x', 'X position'),
                     ('SLIDER', 'dd_trace_y', 'Y position'), ('SLIDER', 'dd_trace_rotation', 'Rotation'),
                     ('PAIR_ACTIONS', 'TRACE_FLIP_X', 'TRACE_FLIP_Y', 'Mirror H', 'Mirror V'),
@@ -1112,7 +1115,7 @@ class MinimalCards:
             return [('SET_SEW_SEGMENT', 'Segment', not free and not self.mn_sewing), ('SET_SEW_FREE', 'Free', free),
                     ('SET_SEW_MN', 'M:N', self.mn_sewing), ('SET_SEW_AUTO', 'Auto sew', False)]
         if owner == 'SHAPE' and self.shaping is not None:
-            return [('GRAB_' + mode, mode.title(), self.shaping.mode == mode) for mode in ('PULL', 'PUSH', 'PIN', 'PINCH', 'STEAM')]
+            return [('GRAB_' + mode, mode.title(), self.shaping.mode == mode) for mode in ('PULL', 'PUSH', 'PIN', 'FOLD', 'SWEEP', 'PINCH', 'STEAM')] + [('GRAB_UNPIN', 'Remove pins', False)]
         if owner == 'PIN':
             return [('SET_PIN_FABRIC', 'Pin', tool == 'PIN'), ('SET_PIN_BOX', 'Box', tool == 'PIN_BOX'), ('SET_PIN_EDGE', 'Edge', tool == 'PIN_EDGE'),
                     ('SET_PIN_BODY', 'Tack to body', tool == 'TACK'), ('SET_PIN_JOIN', 'Tack fabric', tool == 'TACK_FABRIC')]
@@ -1245,7 +1248,7 @@ class MinimalCards:
         return {'RECTANGLE': 'Drag to draw a panel / Shift for a square',
                 'ELLIPSE': 'Drag to draw an ellipse / Shift for a circle',
                 'POLYGON': 'Click to draw / Click the first point or Enter to finish',
-                'INTERNAL': 'Click to draw an internal path / Enter to finish',
+                'INTERNAL': 'Click to draw an internal path / Enter to finish / Drag a point to move it / Double-click a line to add a point',
                 'PIN': 'Click a pattern point to pin or unpin',
                 'PIN_BOX': 'Drag over fabric to pin an area',
                 'PIN_EDGE': 'Click an edge to pin along it',
@@ -1410,9 +1413,14 @@ class MinimalCards:
             angle = float(key.removeprefix('SLASH_SPREAD_').split()[0])
             self.run_edit(lambda: self.session.slash_spread(angle), 'Pattern spread.')
             self.card_kind = None
+        elif key == 'GRAB_UNPIN':
+            removed = self.shaping.unpin_all()
+            self.message = f'{removed} pinned point(s) freed. The cloth drapes again.' if removed else 'No cloth pins to remove.'
         elif key.startswith('GRAB_'):
             self.shaping.mode = key.removeprefix('GRAB_')
-            self.message = {'PIN': 'Drag the cloth and release to pin it there.', 'PINCH': 'Click or drag along the cloth to gather a fold. Space applies.',
+            self.message = {'PIN': 'Drag the cloth and release to pin it there. Ctrl+click frees a pin.', 'PINCH': 'Click or drag along the cloth to gather a fold. Space applies.',
+                            'FOLD': 'Drag along the cloth to gather it into a fold while it simulates. Ctrl+Shift+wheel sets strength.',
+                            'SWEEP': 'Drag to sweep the cloth along with the stroke while it simulates. Ctrl+Shift+wheel sets strength.',
                             'STEAM': 'Drag to shrink, Shift+drag to stretch. Space applies.'}.get(self.shaping.mode, f'Grab mode {self.shaping.mode.title()}')
         elif key == 'SET_SEW_AUTO':
             self.run_edit(self.session.auto_sew, 'Matching edges sewn. Check the seams, Undo removes them.')
@@ -1530,7 +1538,7 @@ class MinimalCards:
             if not obj.is_editable:
                 self.error_message=f'Make kept garment "{obj.name}" editable to change Wear over.'
                 return
-            obj['dd_wear_over']=not obj.get('dd_wear_over',True)
+            obj['dd_wear_over']=not layering.worn(obj,layering.current_pieces(self._scene))
         elif key=='SCROLL_WEAR_OVER':
             self.wear_over_offset=self.wear_over_offset+5 if self.wear_over_offset+5<len(self.card_models) else 0
         elif key in {'CLONE_LINKED','CLONE_BACK','TOGGLE_LINKED'}:
@@ -1576,6 +1584,12 @@ class MinimalCards:
         elif key.startswith('INSP_QUALITY_'):
             choice = key.removeprefix('INSP_QUALITY_')
             scene.dd_quality = QUALITY[choice]
+        elif key.startswith('INSP_SILHOUETTE_'):
+            scene.dd_reference_visible = key == 'INSP_SILHOUETTE_Shown'
+        elif key.startswith('INSP_POINTS_'):
+            scene.dd_points_visible = key == 'INSP_POINTS_Shown'
+            from .arrangement_controls import redraw
+            redraw(bpy.context)
         elif key.startswith('INSP_OPACITY_'):
             choice = key.removeprefix('INSP_OPACITY_')
             scene.dd_reference_opacity = GUIDE_OPACITY[choice]
@@ -1709,7 +1723,7 @@ class MinimalCards:
                 scene.dd_trace_visible = True
                 self.trace_drag = 'ARMED'
                 self.card_kind = None
-                self.message = 'Drag the image on the canvas. Escape or right-click finishes.'
+                self.message = 'Drag the image to move it, a corner to scale it, or the knob to rotate it. Shift snaps rotation. Escape finishes.'
         elif key == 'TRACE_VISIBLE':
             scene.dd_trace_visible = not scene.dd_trace_visible
         elif key.startswith('TRACE_OPACITY_'):

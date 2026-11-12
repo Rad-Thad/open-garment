@@ -1,6 +1,7 @@
 import unittest
 from devil_designer.core import Document
 from devil_designer.starters import (
+    ARM_CLEARANCE,
     create_tee_starter,
     create_tank_starter,
     create_skirt_starter,
@@ -15,6 +16,23 @@ class StarterTests(unittest.TestCase):
         small = create_tee_starter(dict(measurements, height=100.0, waist_y=.93)).patterns[0].outline()
         width = lambda points: max(x for x, _ in points) - min(x for x, _ in points)
         self.assertLess(width(small), width(adult))
+
+    def test_short_avatar_tee_stops_at_the_neck_and_its_sleeves_clear_the_arm(self):
+        measurements = dict(chest=48.5, waist=44.5, hip=61.0, torso_length=16.0, shoulder_width=26.0, arm_length=31.5,
+                            height=107.5, waist_y=.703, neck_y=.865, arm_bottom_y=.782, arm_top_y=.827)
+        points = create_tee_starter(measurements).patterns[0].points
+        armpit, sleeve_bottom, sleeve_top = points[2][1], points[3][1], points[4][1]
+        self.assertLessEqual(max(y for _, y in points), .865)
+        self.assertGreaterEqual(sleeve_top, .827 + ARM_CLEARANCE - 1e-9)
+        self.assertLessEqual(sleeve_bottom, .782 - ARM_CLEARANCE + 1e-9)
+        self.assertLessEqual(armpit, sleeve_bottom)
+
+    def test_body_landmarks_that_already_clear_the_tee_leave_it_unchanged(self):
+        measurements = dict(chest=60.0, waist=47.0, hip=73.0, torso_length=17.5, shoulder_width=29.0, arm_length=50.5,
+                            height=151.0, waist_y=1.047)
+        plain = create_tee_starter(measurements).patterns[0].points
+        landmarks = create_tee_starter(dict(measurements, neck_y=1.40, arm_bottom_y=1.18, arm_top_y=1.22)).patterns[0].points
+        self.assertEqual(plain, landmarks)
 
     def test_starter_registry_completeness(self):
         self.assertIn('STARTER_TEE', STARTER_GENERATORS)
@@ -63,6 +81,26 @@ class StarterTests(unittest.TestCase):
         for seam in doc.seams:
             a, b, diff, pct = doc.seam_stats(seam)
             self.assertLess(diff, 0.005)
+
+    def test_skirt_panels_hang_level_and_clear_the_hips(self):
+        bodies = (None, dict(waist=38.0, hip=64.5, height=110.5, waist_y=.815, hip_y=.601),
+                  dict(waist=80.0, hip=45.0, height=154.0, waist_y=1.01, hip_y=.75))
+        for measurements in bodies:
+            doc = create_skirt_starter(measurements)
+            for pattern in doc.patterns:
+                hem, side, waist, other_side = (doc.edge_length(doc.edge(pattern.id, index)) for index in range(4))
+                self.assertAlmostEqual(side, other_side, places=6)
+                self.assertAlmostEqual(side, 0.48, delta=.001)
+                hem_curve = doc.edge_curve(doc.edge(pattern.id, 0))
+                side_curve = doc.edge_curve(doc.edge(pattern.id, 1))
+                hem_end = (hem_curve[3][0] - hem_curve[2][0], hem_curve[3][1] - hem_curve[2][1])
+                side_start = (side_curve[1][0] - side_curve[0][0], side_curve[1][1] - side_curve[0][1])
+                self.assertAlmostEqual(hem_end[0] * side_start[0] + hem_end[1] * side_start[1], 0.0, places=6)
+            body = measurements or dict(waist=80.0, hip=96.0, waist_y=1.054, hip_y=.854)
+            waist_girth = 2 * doc.edge_length(doc.edge(doc.patterns[0].id, 2)) * 100
+            hem_girth = 2 * doc.edge_length(doc.edge(doc.patterns[0].id, 0)) * 100
+            hip_girth = waist_girth + (hem_girth - waist_girth) * (body['waist_y'] - body['hip_y']) / .48
+            self.assertGreaterEqual(hip_girth, max(body['hip'], body['waist']) + 7.9)
 
     def test_side_seams_start_at_matching_height(self):
         for gen in (create_tee_starter, create_tank_starter, create_skirt_starter):

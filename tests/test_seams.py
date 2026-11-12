@@ -2,13 +2,14 @@ import json
 import math
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 try:
     import bpy
 except ImportError:
     from unittest.mock import MagicMock
     import sys
     sys.modules['bpy'] = MagicMock()
-from devil_designer.construction import sew_reverse
+from devil_designer.construction import chain_range,sew_reverse
 from devil_designer.core import Document, Session, EdgeRef
 from devil_designer.linked_editing import clone_twin, toggle_link
 from devil_designer.design_tools import DesignTools
@@ -21,6 +22,89 @@ class SeamTests(unittest.TestCase):
         self.s.add([(.5,0),(.9,0),(.9,.5),(.5,.5)])
         a,b = self.s.document.patterns
         self.a,self.b = self.s.document.edge(a.id,1),self.s.document.edge(b.id,3)
+
+    def test_mn_sewing_orders_reverse_clicks_and_wraparound(self):
+        for indices in ((1,0),(0,3),(3,2,1,0)):
+            with self.subTest(indices=indices):
+                editor=DummyEditor(self.s,DummyScene(dd_sew_reverse=True))
+                doc=self.s.document
+                first,second=doc.patterns
+                editor.mn_chain=[doc.edge(first.id,i) for i in indices]
+                editor.mn_commit()
+                expected=([3,0] if indices==(0,3) else sorted(indices))
+                self.assertEqual(editor.mn_first,[doc.edge(first.id,i) for i in expected])
+                editor.mn_chain=[doc.edge(second.id,i) for i in indices]
+                editor.mn_commit()
+                seam=doc.seams[-1]
+                for side in (0,1):
+                    chain=seam.side(side)
+                    self.assertTrue(all(a.end==b.start for a,b in zip(chain,chain[1:])))
+                self.s.remove_seam(seam.id)
+
+    def test_full_chain_range_stays_inside_each_edge_despite_float_rounding(self):
+        doc=self.s.document
+        first=doc.patterns[0]
+        chain=[doc.edge(first.id,0),doc.edge(first.id,1)]
+        lengths={chain[0].full():0.30000000000000004,chain[1].full():0.4000000000000001}
+        with patch.object(doc,'edge_length',lambda edge:lengths[edge.full()]),patch.object(doc,'chain_length',lambda edges:sum(lengths[e.full()] for e in edges)):
+            for start,end in ((0,1),(1,0)):
+                with self.subTest(start=start,end=end):
+                    result=chain_range(doc,chain,start,end)
+                    self.assertTrue(all(0<=t<=1 for edge in result for t in (edge.t0,edge.t1)))
+                    self.assertEqual(sorted((result[-1 if start==0 else 0].t0,result[-1 if start==0 else 0].t1)),[0.0,1.0])
+
+    def test_mn_sewing_refuses_disconnected_edges_on_either_side(self):
+        for bad_first in (True,False):
+            with self.subTest(bad_first=bad_first):
+                editor=DummyEditor(self.s,DummyScene(dd_sew_reverse=True))
+                doc=self.s.document
+                first,second=doc.patterns
+                before=doc.dumps()
+                editor.mn_chain=[doc.edge(first.id,i) for i in ((0,2) if bad_first else (1,0))]
+                editor.mn_commit()
+                if not bad_first:
+                    editor.mn_chain=[doc.edge(second.id,i) for i in (0,2)]
+                    editor.mn_commit()
+                self.assertIn('contiguous',editor.message)
+                self.assertEqual(doc.dumps(),before)
+
+    def test_document_load_clears_every_old_selection_and_restores_history(self):
+        for action in ('STARTER_TANK','LIBRARY_LOAD'):
+            for kind in ('PIECES','POINTS','EDGES','PATHS'):
+                with self.subTest(action=action,kind=kind):
+                    session=Session()
+                    session.add([(0,0),(.2,0),(.2,.3),(0,.3)])
+                    session.add([(.4,0),(.6,0),(.6,.3),(.4,.3)])
+                    session.add_path([(.45,.1),(.55,.2)])
+                    session.acquisition_target=kind;session.select_all()
+                    session.placed_pivot=(5,5)
+                    before=session.document.dumps();selection=session.get_selection_state()
+                    scene=DummyScene(dd_avatar=None,dd_document=before,dd_library_selected=0)
+                    editor=DummyEditor(session,scene)
+                    for method in ('clear_interaction_references','update_reference','fit','choose_tool','refresh_library'):
+                        setattr(editor,method,lambda *args,**kwargs:None)
+                    editor.library_items=['saved']
+                    editor.library_previews={'saved':{'tags':[]}}
+                    loaded=Session();loaded.add([(1,0),(1.2,0),(1.2,.3),(1,.3)])
+                    library=SimpleNamespace(load=lambda *args:loaded.document)
+                    with patch.dict('sys.modules',{'devil_designer.library':library}),patch('devil_designer.library',library,create=True):
+                        self.assertTrue(editor.design_action(action),editor.message)
+                    new_id=session.document.patterns[0].id
+                    self.assertEqual(session.selected_patterns,{new_id})
+                    self.assertEqual(session.active_entity,('PIECE',new_id))
+                    self.assertFalse(session.selected_points or session.selected_edges or session.selected_paths)
+                    self.assertIsNone(session.placed_pivot)
+                    self.assertIsNotNone(session.selection_bounds())
+                    session.history()
+                    self.assertEqual(session.document.dumps(),before)
+                    restored=session.get_selection_state()
+                    self.assertEqual(set(restored.pop('point_selection')),set(selection.pop('point_selection')))
+                    self.assertEqual(restored,selection)
+                    session.history(True)
+                    self.assertEqual(session.selected_patterns,{new_id})
+                    count=len(session.document.patterns)
+                    session.delete()
+                    self.assertEqual(len(session.document.patterns),count-1)
 
     def test_version_one_migrates_without_losing_ids(self):
         old = json.loads(self.s.document.dumps())
@@ -461,6 +545,9 @@ class SeamTests(unittest.TestCase):
 
 
 class DummyScene(SimpleNamespace):
+    def __setitem__(self,key,value):
+        setattr(self,key,value)
+
     def get(self, key, default=None):
         return getattr(self, key, default)
 

@@ -5,7 +5,7 @@ from . import curves
 from .canvas import Rect
 from .ui_system import TRANSFORM_FRAME_PAD,TRANSFORM_KNOB_OFFSET,TRANSFORM_HIT_RADIUS,TRANSFORM_PIVOT_HIT_RADIUS
 from .core import update_auto_handles
-from .construction import chain_range,path_range,sew_reverse
+from .construction import chain_range,path_range,sew_reverse,ordered_sewing_chain
 
 class DesignTools:
     def initialize_design(self):
@@ -16,6 +16,7 @@ class DesignTools:
         self.cut_preview=None
         self.trace_points=None
         self.trace_drag=None
+        self.reference_notice=''
         self.mn_sewing=False
         self.mn_chain=[]
         self.mn_first=None
@@ -133,24 +134,16 @@ class DesignTools:
                 elif scene.dd_avatar:
                     from .measurements import estimate_body_measurements
                     measurements = estimate_body_measurements(scene.dd_avatar, scene)
-                before = scene.dd_document
-                self.session.undo_stack.append(before)
-                self.session.redo_stack.clear()
                 starter_doc = generator(measurements, getattr(self.session.document, 'preset', 'COTTON'))
                 self.clear_interaction_references()
-                self.session.document = starter_doc
-                self.session.selected = starter_doc.patterns[0].id if starter_doc.patterns else None
-                self.session.path = 'OUTER'
-                self.session.corner = None
-                self.session.segment = None
-                self.session.point_selection = []
+                self.session.replace_document(starter_doc)
                 self.persist()
                 if scene.dd_avatar:
                     self.reveal_3d()
                 self.update_reference(bpy.context, align=False)
                 self.fit()
                 self.choose_tool('SELECT')
-                self.message = f"{label} starter created. Pre-sewn and placed on avatar."
+                self.message = f"{label} starter created. Pre-sewn and placed on avatar." if scene.dd_avatar else f"{label} starter created in a standard size. Choose your avatar under Garment, Body to fit and place it."
                 return
             elif action == 'DEMO_PANEL':
                 ref_bounds = getattr(self.reference, 'bounds', None) if hasattr(self, 'reference') else None
@@ -306,16 +299,13 @@ class DesignTools:
                     self.library_tags=', '.join(metadata['tags'])
                     self.library_load_path=None
                     self.clear_interaction_references()
-                    self.session.undo_stack.append(before);self.session.redo_stack.clear()
-                    self.session.document=loaded;self.session.selected=loaded.patterns[0].id if loaded.patterns else None
-                    self.session.path='OUTER';self.session.corner=None;self.session.segment=None
-                    self.session.point_selection=[]
+                    self.session.replace_document(loaded)
                     self._stored=scene.dd_document;self.update_reference(bpy.context,align=True);self.fit()
             else:return
             self.persist();self.sync_selection()
             self.message='Done: '+action.replace('_',' ').lower()+'.'
             if scene.get('dd_arrangement_message'):self.message+=' '+scene['dd_arrangement_message']
-            if self.session.last_repairs:self.message+=f' {self.session.last_repairs} affected sewing pair(s) removed; re-pair edited edges.'
+            if self.session.last_repairs:self.message+=f' {self.session.last_repairs} affected sewing pair(s) or elastic edge(s) removed; review edited edges.'
         try:
             operation()
             return True
@@ -395,12 +385,15 @@ class DesignTools:
         if not self.mn_chain:
             self.message='Click at least one edge first.'
         elif self.mn_first is None:
-            self.mn_first=self.mn_chain;self.mn_chain=[]
+            try:self.mn_first=ordered_sewing_chain(self.session.document,self.mn_chain)
+            except ValueError as exc:
+                self.message=str(exc);return
+            self.mn_chain=[]
             self.message='Now click the partner edges, then press Enter.'
         else:
             doc=self.session.document
             try:
-                a=chain_range(doc,self.mn_first,0,1);b=chain_range(doc,self.mn_chain,0,1)
+                a=chain_range(doc,ordered_sewing_chain(doc,self.mn_first),0,1);b=chain_range(doc,ordered_sewing_chain(doc,self.mn_chain),0,1)
                 self.session.sew_chains(a,b,sew_reverse(doc,a,b,self._scene.dd_sew_reverse));self.persist()
                 self.seam_selected=doc.seams[-1].id;self.message=self.sewing_message(doc.seams[-1])
             except ValueError as exc:self.message=str(exc)
@@ -532,9 +525,9 @@ class DesignTools:
 
     def design_canvas_click(self,event):
         doc=self.session.document
-        point=self.world_pointer(event)
         if self.tool=='TACK_FABRIC':
             p,_=self.design_hit()
+            point=self.fabric_point(event,p) if p is not None else None
             if p is None or not p.contains(point):raise ValueError('Click inside the fabric.')
             if self.pending_join is None:
                 self.pending_join=(p.id,*point);self.message='Now click the point to tie it to.'
@@ -558,6 +551,7 @@ class DesignTools:
                     self.select_anchor(anchor);self.message='Anchor selected. Delete removes this pin or tack.';return
             p,index=self.design_hit()
             if p is None:raise ValueError('Click inside the fabric to add a pin or tack.')
+            point=self.fabric_point(event,p)
             self.session.selected=p.id
             if self.tool=='PIN':
                 anchor=self.session.add_anchor(point);self.select_anchor(anchor);self.persist();self.message='Pin added.'
@@ -567,10 +561,11 @@ class DesignTools:
                 edge=self.design_hit_edge()
                 if edge is None or edge.path!='OUTER':raise ValueError('Click the dart mouth on an outer segment.')
                 if self.dart_base and self.dart_base[0][0]!=edge:raise ValueError('Pick both dart base points on the same segment.')
-                t,_=curves.closest_fraction(doc.edge_curve(edge),point)
+                t=self.edge_click_fraction(event,edge)
                 self.dart_base.append((edge,t));self.message='Click the other base point.' if len(self.dart_base)==1 else 'Click the dart apex inside the pattern.'
             else:
                 (edge,a),(_,b)=self.dart_base
+                point=self.fabric_point(event,doc.find(edge.pattern))
                 self.session.dart(edge,a,b,point);self.persist();self.dart_base=[];self.message='Dart created with automatic closing sewing.'
 
     def preview_pattern(self,pattern):
@@ -692,6 +687,35 @@ class DesignTools:
         top=(rect.x+rect.w/2,rect.y+rect.h)
         return dict(rect=rect,corners=[(rect.x,rect.y),(rect.x+rect.w,rect.y),(rect.x+rect.w,rect.y+rect.h),(rect.x,rect.y+rect.h)],
                     stem=top,knob=(top[0],top[1]+TRANSFORM_KNOB_OFFSET*scale),pivot=self.view.screen(self.session.get_pivot(),c))
+
+    def trace_frame(self):
+        from . import tracing
+        scene=self._scene
+        if self.trace_drag is None or scene.dd_trace_locked or not scene.dd_trace_visible or not scene.dd_trace_path:return None
+        try:corners=tracing.entry_corners(tracing.active_entry(scene))[1]
+        except (ValueError,ReferenceError):return None
+        c=self.canvas_layout.canvas;scale=self.canvas_layout.scale
+        screen=[self.view.screen(point,c) for point in corners]
+        center=(sum(x for x,_ in screen)/4,sum(y for _,y in screen)/4)
+        top=((screen[2][0]+screen[3][0])/2,(screen[2][1]+screen[3][1])/2)
+        reach=math.dist(top,center)
+        direction=((top[0]-center[0])/reach,(top[1]-center[1])/reach) if reach>1e-6 else (0.0,1.0)
+        return dict(corners=screen,center=center,stem=top,knob=(top[0]+direction[0]*TRANSFORM_KNOB_OFFSET*scale,top[1]+direction[1]*TRANSFORM_KNOB_OFFSET*scale))
+
+    def trace_frame_hit(self,frame=None):
+        frame=frame or self.trace_frame()
+        if frame is None:return None
+        scale=self.canvas_layout.scale
+        if math.dist(self.pointer,frame['knob'])<=TRANSFORM_HIT_RADIUS*scale:return 'ROTATE'
+        if any(math.dist(self.pointer,corner)<=TRANSFORM_HIT_RADIUS*scale for corner in frame['corners']):return 'SCALE'
+        return 'MOVE'
+
+    def announce_reference(self):
+        error=self._scene.dd_trace_error
+        if error==self.reference_notice:return False
+        self.reference_notice=error
+        if error:self.message=error
+        return bool(error)
 
     def transform_frame_hit(self,frame=None):
         frame=frame or self.transform_frame()

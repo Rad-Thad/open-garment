@@ -32,7 +32,7 @@ Use these tools to create and edit garment pattern pieces. A Bezier curve is a s
 | **Lengths Toggle** | <kbd>L</kbd> | Show or hide edge lengths in centimetres. |
 | **Duplicate** | <kbd>Shift</kbd> + <kbd>D</kbd> | Copy selected pieces or the active piece. |
 | **Delete** | <kbd>X</kbd> or <kbd>Del</kbd> | Remove the selected item. |
-| **Grid Snapping** | <kbd>S</kbd> | Turn grid snapping on or off. Hold <kbd>Ctrl</kbd> to reverse it temporarily. |
+| **Snapping** | <kbd>S</kbd> | Turn snapping on or off. Hold <kbd>Ctrl</kbd> to reverse it temporarily. While you draw or move, the cursor snaps to the points, midpoints, edges and crossings of every piece, and a small marker names what it caught. Away from other geometry it snaps to the 1 cm grid. |
 | **Axis Constraint** | Hold <kbd>Shift</kbd> | Keep movement horizontal or vertical. |
 | **Pan / Zoom** | <kbd>MMB</kbd> / Wheel | Move around or zoom the canvas. |
 | **Fit Design** | <kbd>Home</kbd> | Show all pattern pieces in the canvas. |
@@ -53,7 +53,7 @@ These shortcuts work while the pointer is over the editor panel, its dock, or an
 Select a point and press <kbd>C</kbd> to make it a smooth curve. Drag its handles to change the shape. Right-click a point or edge to enter an exact position or length in centimetres.
 
 <figure class="dd-shot" id="shot-draft-bezier-editing" data-shot='{"action":"Edit Bezier curve handles and enter numeric coordinates","ui_state":"Smooth curve point with two control handles and open right-click coordinate menu","framing":"close-up","aspect_ratio":"4:3"}' data-shot-framing="close-up" aria-labelledby="shot-draft-bezier-editing-caption">
-  <div class="dd-shot__frame"><span class="dd-shot__icon" aria-hidden="true"></span><span class="dd-shot__label">Screenshot coming soon</span></div>
+  <div class="dd-shot__frame"><img src="assets/images/shots/shot-draft-bezier-editing.png" alt="Close-up view of a smooth curve control point with dual handles and the right-click numeric coordinate popup menu." loading="lazy" /></div>
   <figcaption id="shot-draft-bezier-editing-caption">Close-up view of a smooth curve control point with dual handles and the right-click numeric coordinate popup menu.</figcaption>
 </figure>
 
@@ -68,7 +68,7 @@ Select a straight edge and press <kbd>U</kbd> to mirror the piece across that ed
 Select a straight edge and press <kbd>Shift</kbd> + <kbd>U</kbd> to make a separate mirrored piece with the matching edges already sewn.
 
 <figure class="dd-shot" id="shot-draft-mirror-with-seam" data-shot='{"action":"Generate a mirrored piece connected with a sewn seam","ui_state":"Mirrored separate pattern pieces with matching boundary edges joined by an active seam","framing":"full-editor","aspect_ratio":"16:9"}' data-shot-framing="full-editor" aria-labelledby="shot-draft-mirror-with-seam-caption">
-  <div class="dd-shot__frame"><span class="dd-shot__icon" aria-hidden="true"></span><span class="dd-shot__label">Screenshot coming soon</span></div>
+  <div class="dd-shot__frame"><img src="assets/images/shots/shot-draft-mirror-with-seam.png" alt="Full-editor view showing separate mirrored pattern pieces created across an axis with matching seam connections already established." loading="lazy" /></div>
   <figcaption id="shot-draft-mirror-with-seam-caption">Full-editor view showing separate mirrored pattern pieces created across an axis with matching seam connections already established.</figcaption>
 </figure>
 
@@ -125,7 +125,7 @@ To adjust a fold, right-click one of its internal edges and open **Fold or pleat
 Continue with sewing, arrangement, simulation, and keeping the mesh. Fold settings are saved with the pattern in the garment library and Blender file, and are included in undo and redo.
 
 <figure class="dd-shot" id="shot-draft-fold-pleats" data-shot='{"action":"Configure internal fold lines and pleat directions","ui_state":"Parallel pleat lines with Mountain and Valley arrows and labels across valid boundary path","framing":"close-up","aspect_ratio":"4:3"}' data-shot-framing="close-up" aria-labelledby="shot-draft-fold-pleats-caption">
-  <div class="dd-shot__frame"><span class="dd-shot__icon" aria-hidden="true"></span><span class="dd-shot__label">Screenshot coming soon</span></div>
+  <div class="dd-shot__frame"><img src="assets/images/shots/shot-draft-fold-pleats.png" alt="Close-up view of parallel pleat paths displaying Mountain and Valley directional indicators, angle settings, and valid boundary-to-boundary lines." loading="lazy" /></div>
   <figcaption id="shot-draft-fold-pleats-caption">Close-up view of parallel pleat paths displaying Mountain and Valley directional indicators, angle settings, and valid boundary-to-boundary lines.</figcaption>
 </figure>
 
@@ -147,11 +147,11 @@ Fold settings do not change how darts are made or add a dart-depth cap. A deep d
 2. Place the image and adjust its opacity.
 3. Open **Set measured scale** and set **Known length** in centimetres.
 4. Choose **Pick length endpoints**, then click two known points to set the image scale.
-5. In **Image placement**, choose **Move on canvas** and drag the image, or set its width, position, and rotation. **Mirror H** and **Mirror V** flip it, for example to trace the other side.
+5. In **Image placement**, choose **Place on canvas**. Drag the image to move it, a corner to scale it, or the knob above it to rotate it (hold Shift for 15 degree steps), then press Escape. You can also type its width, position, and rotation. **Mirror H** and **Mirror V** flip it, for example to trace the other side.
 6. Choose **Add image** to place another reference, such as a back view or a detail photo, beside the first. **Next image** picks which one you edit. Each image keeps its own placement, scale, and opacity.
-7. **Lock** keeps the image from moving. **Replace image** swaps the file and keeps its placement and scale. References are saved with the Blender file.
+7. **Lock** keeps the image from moving. **Replace image** swaps the file and keeps its placement and scale. References are saved with the Blender file. If an image file goes missing, the canvas names it so you can replace it.
 
 <figure class="dd-shot" id="shot-draft-trace-reference" data-shot='{"action":"Calibrate reference image scale with known-length endpoints","ui_state":"Loaded trace image with calibration endpoints and scale numeric input controls","framing":"close-up","aspect_ratio":"4:3"}' data-shot-framing="close-up" aria-labelledby="shot-draft-trace-reference-caption">
-  <div class="dd-shot__frame"><span class="dd-shot__icon" aria-hidden="true"></span><span class="dd-shot__label">Screenshot coming soon</span></div>
+  <div class="dd-shot__frame"><img src="assets/images/shots/shot-draft-trace-reference.png" alt="Close-up view of the loaded reference image overlay showing picked calibration endpoints and measured scale dimension inputs." loading="lazy" /></div>
   <figcaption id="shot-draft-trace-reference-caption">Close-up view of the loaded reference image overlay showing picked calibration endpoints and measured scale dimension inputs.</figcaption>
 </figure>

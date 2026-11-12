@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import sys
 import traceback
@@ -739,6 +740,28 @@ def check_interaction_regressions(workspace, event, point, check):
             workspace.pointer = point
             check(workspace.transform_frame_hit() == handle, 'frame hover resolves ' + handle.lower())
             draw_selection_state('Hovered frame ' + handle.lower() + ' handle with hint')
+        for handle, point, cursor in (('ROTATE', frame['knob'], 'HAND'), ('SCALE', frame['corners'][2], 'SCROLL_XY'), ('PIVOT', frame['pivot'], 'CROSSHAIR')):
+            workspace.handle_event(bpy.context, event('MOUSEMOVE', point, 'NOTHING'))
+            check(workspace.window_cursor == cursor, 'hovering the ' + handle.lower() + ' handle shows the ' + cursor + ' cursor, got ' + workspace.window_cursor)
+        canvas = workspace.canvas_layout.canvas
+        outline = workspace.session.document.find(first.id).outline()
+        inside = workspace.view.screen((sum(x for x, _ in outline) / len(outline), sum(y for _, y in outline) / len(outline)), canvas)
+        workspace.handle_event(bpy.context, event('MOUSEMOVE', inside, 'NOTHING'))
+        check(workspace.window_cursor == 'DEFAULT', 'leaving the frame handles restores the default cursor')
+        fills = {}
+        original_fill = workspace.renderer.fill_pattern
+        def recording_fill(identity, world, screen, color, *rest):
+            fills[identity] = color[3]
+            return original_fill(identity, world, screen, color, *rest)
+        workspace.renderer.fill_pattern = recording_fill
+        try:
+            workspace.renderer.draw(workspace)
+        finally:
+            del workspace.renderer.fill_pattern
+        check(not workspace.error_message, 'drawing a hovered piece raises no render error: ' + str(workspace.error_message))
+        others = [value for identity, value in fills.items() if identity not in (first.id, second.id)]
+        check(fills.get(first.id, 0) > max(others, default=.055) and fills.get(first.id, 0) < fills.get(second.id, 1),
+              'a hovered unselected piece reads brighter than idle pieces and quieter than the selected one: ' + str(fills))
         for kind, value, label in (('ROTATE', '30', 'rotation ghost'), ('SCALE', '120%', 'scale ghost'), ('SCALE', '-1', 'blocked scale ghost')):
             workspace.start_transform(kind)
             workspace.gesture['handle'] = True
@@ -758,6 +781,21 @@ def check_interaction_regressions(workspace, event, point, check):
         workspace.gesture = dict(mode='MOVE', start=(0.0, 0.0), ref_pos=(0.0, 0.0), delta=(0.03, 0.0), moved=True)
         workspace.gesture['candidate'], workspace.gesture['preflight'] = workspace.session.build_transform_candidate('MOVE', (0.03, 0.0))
         draw_selection_state('Live drag-move ghost with readout')
+        workspace.cancel_gesture()
+        from devil_designer.linked_editing import clone_twin
+        workspace.session = Session()
+        workspace.session.add([(0, 0), (.4, 0), (.4, .5), (0, .5)])
+        source = workspace.session.document.find(workspace.session.selected)
+        twin = clone_twin(workspace.session)
+        partner = next(node for node in twin.vertices if node.id == workspace.session.document.linked_pairs[0]['mapping'][source.vertices[1].id])
+        workspace.session.clear_selection()
+        workspace.session.select_point(source.id, source.loops()[0][0], 1)
+        workspace.gesture = dict(mode='MOVE', start=(.4, 0.0), ref_pos=(.4, 0.0), delta=(.05, 0.0), moved=True)
+        snap = workspace.move_snap()
+        check(snap['targets'].snap((partner.x + .004, partner.y + .003), .01) is None,
+              'dragging a linked point does not snap to its twin partner left behind')
+        workspace.gesture['candidate'], workspace.gesture['preflight'] = workspace.session.build_transform_candidate('MOVE', (.05, 0.0))
+        draw_selection_state('Live linked-twin drag ghost')
         workspace.cancel_gesture()
         workspace.card_kind = None
     finally:
@@ -983,6 +1021,88 @@ def check_arrangement_controls(workspace,event,check):
         workspace.canvas_layout=workspace.make_layout()
 
 
+def check_click_snapping(workspace, event, check):
+    from devil_designer import snapping
+    from devil_designer.core import Session
+
+    original_session, original_tool, original_snap = workspace.session, workspace.tool, workspace.snap
+    original_view = (workspace.view.cx, workspace.view.cy, workspace.view.zoom)
+    original_full = workspace.full
+    session = Session()
+    session.add([(0, 0), (.41, 0), (.41, .41), (0, .41)])
+    session.add_path([(.1, .1), (.2, .1), (.2, .2), (.1, .2)], True)
+    session.cut()
+    session.add_path([(.303, .307), (.36, .36)])
+    workspace.session = session
+    workspace.clear_interaction_references()
+    workspace.persist()
+    workspace.fit()
+    workspace.snap = True
+    piece = session.document.patterns[0]
+
+    def pixel(world, offset=(3, 2)):
+        workspace.canvas_layout = workspace.make_layout()
+        x, y = workspace.view.screen(world, workspace.canvas_layout.canvas)
+        return x + offset[0], y + offset[1]
+
+    def press(world, offset=(3, 2), value='PRESS'):
+        spot = pixel(world, offset)
+        workspace.handle_event(bpy.context, event('MOUSEMOVE', spot, 'NOTHING'))
+        workspace.handle_event(bpy.context, event('LEFTMOUSE', spot, value))
+        if value == 'PRESS':
+            workspace.handle_event(bpy.context, event('LEFTMOUSE', spot, 'RELEASE'))
+
+    try:
+        workspace.choose_tool('PIN')
+        spot = pixel((.303, .307))
+        workspace.handle_event(bpy.context, event('MOUSEMOVE', spot, 'NOTHING'))
+        check(workspace.snap_marker is not None and workspace.snap_marker[1] == snapping.POINT,
+              'hovering the Pin tool near a point shows its snap marker: ' + str(workspace.snap_marker))
+        press((.303, .307))
+        anchor = session.document.anchors[-1]
+        check(math.dist((anchor.x, anchor.y), (.303, .307)) < 1e-9, 'a Pin click snaps onto a nearby point: ' + str((anchor.x, anchor.y)))
+        press((.2, .15), (4, 0))
+        anchor = session.document.anchors[-1]
+        check(len(session.document.anchors) == 2 and piece.contains((anchor.x, anchor.y)),
+              'a Pin snap that would land on a hole outline is skipped and the pin stays in the fabric: ' + str((anchor.x, anchor.y)))
+        workspace.choose_tool('TACK')
+        press((.36, .36))
+        check(workspace.pending_tack is not None and math.dist(workspace.pending_tack[1], (.36, .36)) < 1e-9,
+              'a Tack click snaps onto a nearby point: ' + str(workspace.pending_tack))
+        workspace.pending_tack = None
+        workspace.tool = 'TACK_FABRIC'
+        press((.2, .15), (4, 0))
+        check(workspace.pending_join is not None and piece.contains(workspace.pending_join[1:]),
+              'a fabric Tack next to a hole outline is placed instead of failing the inside check: ' + str(workspace.message))
+        workspace.pending_join = None
+        workspace.choose_tool('DART')
+        press((.205, 0))
+        check(len(workspace.dart_base) == 1 and abs(workspace.dart_base[0][1] - .5) < 1e-6,
+              'the first dart base click snaps to the outline midpoint: ' + str(workspace.dart_base))
+        workspace.dart_base = []
+        workspace.choose_tool('SELECT')
+        top = session.document.edge(piece.id, 2)
+        middle = session.document.edge_point(top, .5)
+        press(middle, (3, 1), 'DOUBLE_CLICK')
+        nodes = session.document.find(piece.id).path('OUTER').vertices
+        check(len(nodes) == 5 and any(math.dist((node.x, node.y), middle) < 1e-9 for node in nodes),
+              'a double-click edge split snaps to the edge midpoint: ' + str([(node.x, node.y) for node in nodes]))
+        check(not workspace.error_message, 'click snapping raises no editor error: ' + str(workspace.error_message))
+    finally:
+        workspace.clear_interaction_references()
+        workspace.dart_base = []
+        workspace.pending_tack = None
+        workspace.pending_join = None
+        workspace.session = original_session
+        workspace.persist()
+        workspace.snap = original_snap
+        if original_full and not workspace.full:
+            workspace.restore_canvas()
+        workspace.view.cx, workspace.view.cy, workspace.view.zoom = original_view
+        workspace.choose_tool(original_tool)
+        workspace.canvas_layout = workspace.make_layout()
+
+
 def run():
     passed = []
 
@@ -1088,6 +1208,7 @@ def run():
 
             canvas_point = (workspace.canvas_layout.canvas.x + workspace.canvas_layout.canvas.w / 2, workspace.canvas_layout.canvas.y + 80)
             check_interaction_regressions(workspace, event, canvas_point, check)
+            check_click_snapping(workspace, event, check)
 
             workspace.choose_tool('RECTANGLE')
             for start, end in [((-.4, 0), (-.1, .4)), ((.1, 0), (.4, .4))]:
@@ -1297,7 +1418,7 @@ def run():
             button('SIMULATE_OPTIONS')
             check(workspace.card_kind=='SIMULATE','Simulate arrow opens Wear over only after kept garments exist')
             rows=[row for rect,row in workspace.minimal_card()[2] if row[0].startswith('WEAR_OVER_')]
-            check(len(rows)==5 and all(row[2]=='On' for row in rows),'Wear over shows at most five garments and defaults every garment on')
+            check(len(rows)==5 and all(row[2]=='Off' for row in rows),'Wear over shows at most five garments and defaults kept copies of the current design off')
             first_names=[row[1] for row in rows]
             card=workspace.minimal_card()[0]
             inside=(card.x+card.w/2,card.y+card.h/2)
@@ -1307,7 +1428,7 @@ def run():
             check([row[1] for row in rows]!=first_names and workspace.view.zoom==zoom,'Wear over scrolls its five-row list without zooming the canvas')
             target=workspace.card_models[int(rows[-1][0].removeprefix('WEAR_OVER_'))]
             card_click(rows[-1][0])
-            check(target.get('dd_wear_over') is False and workspace.card_kind is None,'Wear over toggle persists and immediately dismisses to pure canvas')
+            check(target.get('dd_wear_over') is True and workspace.card_kind is None,'Wear over toggle persists and immediately dismisses to pure canvas')
             button('SIMULATE_OPTIONS')
             card_click('SCROLL_WEAR_OVER')
             check(workspace.card_kind=='SIMULATE' and len([row for rect,row in workspace.minimal_card()[2] if row[0].startswith('WEAR_OVER_')])==5,

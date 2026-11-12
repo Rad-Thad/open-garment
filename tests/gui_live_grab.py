@@ -1,5 +1,6 @@
 import json
 import math
+import time
 from pathlib import Path
 import sys
 import traceback
@@ -113,8 +114,10 @@ def advance():
             handle = xpbd.input_slot(state['simulation'], 'Grab Handle').value
             check(not handle.visible_get(), 'grab handle is never visible')
             check(workspace.overlay_cache is not None or bpy.context.screen.is_animation_playing, 'overlay is cached during playback')
+            state['overlay_time'] = workspace.overlay_cache_time = time.perf_counter()
             return .3
         if step == 2:
+            check(workspace.overlay_cache_time > state['overlay_time'], 'the cached overlay refreshes within 0.3 s during playback')
             strip = workspace.shaping_controls_layout()
             check({'RADIUS_MINUS', 'RADIUS_PLUS'} <= set(strip), 'Grab controls are laid out')
             workspace.handle_event(bpy.context, event('MOUSEMOVE', center(strip['RADIUS_VALUE']), 'NOTHING'))
@@ -158,6 +161,49 @@ def advance():
             check(workspace.message.startswith('Released'), 'release is reported to the artist')
             return 1.0
         if step == 6:
+            from devil_designer import xpbd_live
+            point = cloth_pixel()
+            moved = (point[0] + 30, point[1] + 20)
+            workspace.handle_event(bpy.context, event('MOUSEMOVE', point, 'NOTHING'))
+            workspace.handle_event(bpy.context, event('LEFTMOUSE', point))
+            workspace.handle_event(bpy.context, event('MOUSEMOVE', moved, 'NOTHING'))
+            workspace.handle_event(bpy.context, event('W', moved))
+            check(not workspace.shaping.held and len(xpbd_live.pinned_vertices(state['simulation'])) > 0, 'W pins the held cloth while it simulates')
+            workspace.handle_event(bpy.context, event('LEFTMOUSE', moved, 'RELEASE'))
+            workspace.draw_overlay()
+            check(not workspace.error_message and len(workspace.cloth_pin_pixels()) > 0, 'cloth pins are drawn during live simulation')
+            view = state['area'].spaces.active.region_3d
+            placed = view.view_location.copy(), view.view_rotation.copy(), view.view_distance
+            pins = workspace.cloth_pin_pixels()
+            check(pins and all(seen for _, seen in pins), 'pins on the side facing the artist draw at full strength: ' + str(pins))
+            view.view_rotation = Quaternion((0, 0, 1), math.pi) @ Quaternion((1, 0, 0), math.pi / 2)
+            view.view_location = (0, 0, 1.2)
+            view.update()
+            pins = workspace.cloth_pin_pixels()
+            check(pins and not any(seen for _, seen in pins), 'pins behind the body are dimmed instead of drawing over it: ' + str(pins))
+            workspace.draw_overlay()
+            check(not workspace.error_message, 'dimmed pins draw without a render error')
+            view.view_location, view.view_rotation, view.view_distance = placed
+            view.update()
+            return .6
+        if step == 7:
+            from devil_designer import xpbd_live
+            point = cloth_pixel()
+            workspace.handle_event(bpy.context, event('LEFTMOUSE', point, ctrl=True))
+            workspace.handle_event(bpy.context, event('LEFTMOUSE', point, 'RELEASE', ctrl=True))
+            check(not workspace.shaping.held, 'Ctrl+click does not grab the cloth')
+            workspace.open_flyout('SHAPE')
+            click(center(workspace.canvas_layout.buttons['STRIP_GRAB_UNPIN'][0]))
+            check(len(xpbd_live.pinned_vertices(state['simulation'])) == 0 and workspace.tool == 'SHAPE', 'Remove pins frees every cloth pin and stays in Grab')
+            workspace.choose_tool('SELECT')
+            check(workspace.tool == 'SELECT', 'the artist leaves Grab')
+            workspace.handle_event(bpy.context, event('Z', point, ctrl=True))
+            check(len(xpbd_live.pinned_vertices(state['simulation'])) > 0, 'Ctrl+Z outside Grab brings the removed cloth pins back')
+            workspace.handle_event(bpy.context, SimpleNamespace(**{**vars(event('Z', point, ctrl=True)), 'shift': True}))
+            check(len(xpbd_live.pinned_vertices(state['simulation'])) == 0, 'Ctrl+Shift+Z outside Grab removes them again')
+            check('"drape"' in state['scene'].dd_history, 'cloth pin steps are saved with the undo history in the Blender file')
+            return .4
+        if step == 8:
             workspace.draw_overlay()
             check(not workspace.error_message, 'editor draws without error during live simulation')
             button('SIMULATE')
