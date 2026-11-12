@@ -3,6 +3,73 @@
 Repo: repository root, branch `gpu-solver`.
 Remotes: `origin = Rad-Thad/open-garment`, `upstream = Artbyo3/DEVIL-DESIGNER`.
 
+## Revision R3 (2026-11-12): history cleanup, upstream sync, GPU live tools, GUI suites green on macOS
+
+Build: `dist/devil_designer-0.15.1.zip`, SHA-256 `c1df4ce7d3e96ce87a4ca4799a9c286e80753a1d8d4dd32d1160e7f06f23879d`.
+
+### History and remotes
+
+- `M7-STATUS.md` removed from `gpu-solver` history with `git filter-branch` (old tip `412befd` → new tip `c08cac0`, tree identical, 38 → 32 commits; the six commits that only touched that file were dropped). Commit ids quoted in older sections of this file are pre-rewrite. Force-pushed with lease. `tools/check_public.py` passes.
+- GitHub may keep the pre-rewrite commits reachable by direct SHA until its own garbage collection; an earlier purge needs a GitHub Support request by the owner.
+- Fork `master` fast-forwarded to upstream `e17d9e0`.
+
+### Upstream merge (`e17d9e0`, merge commit `0e2b3b3`)
+
+Conflicts in `library.py`, `presets.py`, `ui.py`, `xpbd.py`, `xpbd_live.py`, `tools/dev.py`, `tools/screenshot.py`, `tests/test_developer_runner.py`; both sides kept. Integration: `xpbd.current` and `ClothGrab.alive` accept GPU-owned objects, `arm` uses `xpbd.vertex_budget`, every tool resolves Blender through `tools.workspace.blender_path`, Blender temp files go to `scratch/blender-temp`, version `0.15.1`.
+
+### Fixes found during R3
+
+| Commit | Finding | Fix |
+|---|---|---|
+| `1572b2b` | Blender 5.2.2 `mesh.edges.add` crashes (SIGBUS) on meshes with about 37k edges; reproduced on a plain grid without add-on code. Hit at 0.005 m on both solvers | Solver link edges are appended through BMesh |
+| `aba7c00` | `blender_torso` Hoodie left one seam pair open, identically at upstream `e17d9e0`: the hood centre seam ended at the front neck, so both back hood corners met only the back-neck vertex | Hood centre seam sewn on the back edges (right 1 ↔ left 3) |
+| `8bdf451` | Fork's per-edge Allowance made the Edge card six controls (`gui_fast_flow` budget 5) | Owner choice: one "Elastic & allowance" submenu row |
+| `52bf9f8` | GPU drapes differed run to run: Blender's UV-sphere primitive returns faces in varying order and the contact pass breaks ties by triangle order | Collider triangles are put in canonical order before upload; repeated runs give byte-identical positions |
+| `2ce4359` | "stiffer measured fabric drapes larger" compared bounding-box volume, which is not monotonic in bending (limp 0.0504, soft 0.0586, stiff 0.0579, board 0.0395) | Owner-approved: compares mean fold angle (limp 11.4°, soft 8.3°, stiff 5.1°, board 3.4°; soft 8.31–8.50°, stiff 5.11–5.12° across seven triangle orders) |
+
+### GPU parity for upstream live tools (`9ddec16`)
+
+| Tool | GPU behaviour |
+|---|---|
+| Live pins / unpins | `dd_pinned`, `dd_pin_target` read every frame |
+| Grab release | `Grab Release` ≥ 0 ends the pull immediately (upstream's 0.57 s ease-out needs soft pins; not ported) |
+| Fold, Sweep | Same brush math as the node graph; a held grab overrides the brush |
+| Air damping | Mean of `dd_damping` over the garment |
+
+### GUI suites on macOS
+
+Root cause: the test window opened on the portrait 4K main display at UI scale 2. `tools/dev.py` now opens a 960×540-point window (1920×1080 px; region 1574×954) and `tools/run_blender_gui.py` normalises the view scale so the effective scale is 1. `gui_design` multiplies its own UI-scale steps by that base; the library preview test patches `library.entries` instead of reading the user's library folder. Windows open on OmniWM workspace 8 through a scratch wrapper.
+
+### Results on this Mac (source `2ce4359`)
+
+- Real Blender, full `sh dev.sh --test`: `ALL TESTS PASSED!` — 15 background suites, `blender_gpu.py`, GPU GUI `gui_core_workflow` and `gui_live_grab`, all 19 NODES GUI suites.
+- Mocked: dead-code/import integrity and unit tests (including meshing regression) pass.
+- Package: extension validation and real-Blender load gate pass; zip members identical to source; wheel `garment_solver-0.3.1-cp311-abi3-macosx_11_0_arm64.whl` included.
+- Benchmarks (`tools/bench_blender.py`):
+
+| Solver | Spacing | Vertices | ms/frame | Stretch |
+|---|---|---|---|---|
+| NODES | 0.025 | 820 | 14.3 | 1.029 |
+| NODES | 0.012 | 3342 | 17.8 | 1.006 |
+| NODES | 0.006 | 12404 | 35.2 | 1.127 |
+| GPU | 0.025 | 820 | 9.1 | 1.123 |
+| GPU | 0.012 | 3342 | 27.3 | 1.120 |
+| GPU | 0.006 | 12404 | 33.9 | 1.199 |
+
+### Open items
+
+- **GPU Fold spread (owner waiver 2026-11-12, `7c8df41`):** `gui_live_brush` under GPU fails "Fold moves far cloth far less than the cloth under the brush" (GPU gathered 4.7 mm, far 7.1 mm; NODES 3.5 / 1.3 mm). Cloth 4–20 cm from the stroke moves 17–30 mm on GPU vs 1.6–3 mm on NODES, mostly outward from the body. Not caused by nondeterminism, substep pin interpolation or iteration count (2/4/8 give the same spread). The suite is out of the GPU GUI loop and still runs under NODES.
+- Stretch 1.199 at 0.006 m on GPU (R2 F10).
+- Carried from R2: bending calibration waived; sewing-preview rebuild with Frozen pieces.
+- Blender's add-on shader `arrangement_controls.display_shader` exceeds the 128-byte push-constant minimum (warning only on this Mac).
+
+### Owner decisions (2026-11-12)
+
+- Merge upstream first; port all upstream live tools to the GPU solver; version 0.15.1; fast-forward fork `master`; rewrite `gpu-solver` history (force push authorized); GUI windows on workspace 8.
+- Edge card: Elastic and per-edge Allowance share one submenu.
+- GPU Fold spread tabled; `gui_live_brush` removed from the GPU GUI loop until fixed.
+- Measured stiffness check uses mean fold angle.
+
 ## Revision R2 (2026-11-11 findings, fixes on top of `8c4d4b3`)
 
 The R1 build `dist/devil_designer-0.15.0.zip` (SHA-256 `79bcfdf9…`) is **withdrawn**: the GPU solver did not step at default density.

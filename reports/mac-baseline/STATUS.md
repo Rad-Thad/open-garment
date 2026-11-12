@@ -68,3 +68,7 @@ BENCH solver=NODES spacing=0.006 vertices=12934 ms_per_frame=28.789
 ## R1 re-check (2026-11-12)
 
 gui_design and gui_matrix were re-run 3× at `bb73ec8` and once at `550c94e`; the first-failure text is identical to the rows above, so both remain pre-existing environment drift on this Mac, not a fork regression.
+
+## R3 (2026-11-12)
+
+The known-failing set is empty. The six suites failed because the GUI test window opened on the portrait 4K main display at UI scale 2 (`gui_design`, `gui_arrangement_display`, `gui_avatar_field`, `gui_live_grab`, `gui_matrix`) or read the user's garment library folder (`gui_fast_flow`). `tools/dev.py` now opens a 1920×1080-pixel window at effective scale 1 and the library test is hermetic. All 19 GUI suites and all background suites pass on this Mac at `2ce4359`.
