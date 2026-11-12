@@ -46,6 +46,24 @@ def stretch(simulation):
     return ratios[int(len(ratios) * .99)]
 
 
+def fold_angle(simulation):
+    mesh = simulation.data
+    mesh.calc_loop_triangles()
+    triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get('vertices', triangles)
+    triangles = triangles.reshape(-1, 3)
+    coordinates = points(simulation)
+    normals = np.cross(coordinates[triangles[:, 1]] - coordinates[triangles[:, 0]], coordinates[triangles[:, 2]] - coordinates[triangles[:, 0]])
+    normals /= np.maximum(np.linalg.norm(normals, axis=1), 1e-12)[:, None]
+    shared = {}
+    for index, triangle in enumerate(triangles.tolist()):
+        for corner in range(3):
+            shared.setdefault(tuple(sorted((triangle[corner], triangle[(corner + 1) % 3]))), []).append(index)
+    pairs = np.array([faces for faces in shared.values() if len(faces) == 2])
+    cosine = np.clip((normals[pairs[:, 0]] * normals[pairs[:, 1]]).sum(axis=1), -1.0, 1.0)
+    return float(np.degrees(np.arccos(cosine)).mean())
+
+
 devil_designer.register()
 scene = bpy.context.scene
 scene.dd_solver = 'GPU'
@@ -153,7 +171,7 @@ check(raised, 'measured fabric rejects the NODES solver')
 scene.dd_solver = 'GPU'
 scene.dd_self_collision = False
 
-volumes = {}
+folds = {}
 for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
     doc = Document.loads(scene.dd_document)
     for pattern in doc.patterns:
@@ -168,10 +186,9 @@ for name, preset in (('MeasuredSoft', soft), ('MeasuredStiff', stiff)):
     run_frames(scene, 30)
     check(simulation['dd_steps'] == 90, 'every frame steps the solver once')
     check(z60 - points(simulation)[:, 2].mean() < .05, 'draped garment stays on the body')
-    coordinates = points(simulation)
-    volumes[name] = float((coordinates.max(axis=0) - coordinates.min(axis=0)).prod())
-check(volumes['MeasuredStiff'] > volumes['MeasuredSoft'],
-      f'stiffer measured fabric drapes larger ({volumes["MeasuredStiff"]:.5f} > {volumes["MeasuredSoft"]:.5f})')
+    folds[name] = fold_angle(simulation)
+check(folds['MeasuredStiff'] < folds['MeasuredSoft'],
+      f'stiffer measured fabric folds less sharply ({folds["MeasuredStiff"]:.2f} < {folds["MeasuredSoft"]:.2f} degrees)')
 xpbd.hold(simulation, [0])
 run_frames(scene, 5)
 scene.frame_set(scene.frame_start)
