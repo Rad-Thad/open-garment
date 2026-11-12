@@ -67,7 +67,7 @@ def heading_to(start, point, rect, margin):
 
 HOVER_MENUS = {'PIECE_FABRIC_MENU': 'PIECE_FABRIC', 'PIECE_DENSITY_MENU': 'PIECE_DENSITY', 'PIECE_SIMULATION_MENU': 'PIECE_SIMULATION',
                'PIECE_PLACEMENT_MENU': 'PIECE_PLACEMENT', 'PIECE_CLONE_MENU': 'PIECE_CLONE', 'TRANSFORM_MENU': 'TRANSFORM_MENU',
-               'STARTERS_MENU': 'STARTERS', 'FOLD_MENU': 'FOLD', 'GARMENT_FABRIC_MENU': 'GARMENT_FABRIC'}
+               'STARTERS_MENU': 'STARTERS', 'FOLD_MENU': 'FOLD', 'GARMENT_FABRIC_MENU': 'GARMENT_FABRIC', 'EDGE_SEAM_MENU': 'EDGE_SEAM'}
 STRIP_KEYS = {'SELECT': 'V', 'SELECT_ALL': 'A', 'SELECT_INVERT': 'Ctrl I', 'SET_DRAW_RECTANGLE': 'R', 'SET_DRAW_POLYGON': 'P', 'SET_DRAW_ELLIPSE': 'E',
               'SET_INTERNAL_PATH': 'I', 'SET_INTERNAL_DART': 'D', 'KNIFE_MODE_SEW': 'N', 'SET_SEW_SEGMENT': 'J', 'SET_SEW_FREE': 'Shift J',
               'SET_PIN_FABRIC': 'K', 'SET_PIN_BODY': 'T'}
@@ -75,6 +75,8 @@ FLYOUT_TOOLS = ('SELECT', 'DRAW', 'INTERNAL', 'SEW', 'PIN', 'SHAPE')
 SKIN_OFFSET = {'1 mm': .001, '3 mm': .003, '6 mm': .006}
 FRICTION = {'Slippery': .1, 'Normal': .3, 'Grippy': .6}
 SPLIT_PARTS = ('3 parts', '4 parts', 'Every 2 cm', 'Every 5 cm')
+ELASTIC_CHOICES = ('0%', '10%', '20%', '30%')
+EDGE_ALLOWANCES = ('Piece', '0 cm', '0.5 cm', '1 cm', '2 cm', '3 cm')
 GRAIN_SETTINGS = {'dd_fabric_weft': 'weft', 'dd_fabric_bias': 'bias', 'dd_fabric_shrink_warp': 'shrink_warp', 'dd_fabric_shrink_weft': 'shrink_weft'}
 QUALITY = {'Draft': 12, 'Standard': 24, 'High': 36}
 THICKNESS = {'None': 0, 'Thin': .0005, 'Standard': .001}
@@ -410,6 +412,18 @@ class MinimalCards:
             if key:
                 self.schedule_sub(key, rect, parent[0])
 
+    def edge_elastic_label(self):
+        edge = self.session.segment
+        shrink = next((record['shrink'] for record in self.session.document.elastics
+                       if edge and (record['pattern'], record['start'], record['end']) == (edge.pattern, edge.start, edge.end)), 0)
+        return f'{shrink}%'
+
+    def edge_allowance_label(self, pattern):
+        edge = self.session.segment
+        overrides = getattr(pattern, 'edge_allowances', None) if edge and pattern else None
+        override = overrides.get(edge.start) if overrides else None
+        return 'Piece' if override is None else allowance_label(override, EDGE_ALLOWANCES[1:])
+
     def card_rows(self, kind):
         scene = self._scene
         doc = self.session.document
@@ -581,6 +595,10 @@ class MinimalCards:
                     ('SET_DENSITY_STANDARD', 'Standard', ''),
                     ('SET_DENSITY_FINE', 'Fine', ''),
                     ('SET_DENSITY_ULTRA', 'Ultra', '')]
+        elif kind == 'EDGE_SEAM':
+            title = 'Elastic & allowance'
+            rows = [('CHOICES', 'Elastic', ('EDGE_ELASTIC', ELASTIC_CHOICES, self.edge_elastic_label())),
+                    ('CHOICES', 'Allowance', ('EDGE_ALLOWANCE', EDGE_ALLOWANCES, self.edge_allowance_label(pattern)))]
         elif kind == 'PIECE_SIMULATION':
             if pattern is None:
                 return None
@@ -706,17 +724,11 @@ class MinimalCards:
         elif kind == 'EDGE':
             title = 'Edge'
             edge = self.session.segment
-            elastic = next((record['shrink'] for record in doc.elastics if edge and (record['pattern'], record['start'], record['end']) == (edge.pattern, edge.start, edge.end)), 0)
             rows = [('SLIDER', 'dd_segment_length', 'Exact length'),
-                    ('CHOICES', 'Elastic', ('EDGE_ELASTIC', ('0%', '10%', '20%', '30%'), f'{elastic}%')),
+                    ('MENU', 'EDGE_SEAM_MENU', 'Elastic & allowance', f'{self.edge_elastic_label()}, {self.edge_allowance_label(pattern)}'),
                     ('PAIR_ACTIONS', 'BEND_EDGE', 'SPLIT', 'Bend', 'Split'),
                     ('CHOICES', 'Split into', ('SPLIT_INTO', SPLIT_PARTS, '')),
                     ('PAIR_ACTIONS', 'UNFOLD', 'MIRROR_SEW', 'Unfold', 'Mirror')]
-            edge_override = None
-            if edge and pattern:
-                overrides = getattr(pattern, 'edge_allowances', None)
-                edge_override = overrides.get(edge.start) if overrides else None
-            rows.append(('CHOICES', 'Allowance', ('EDGE_ALLOWANCE', ('Piece', '0 cm', '0.5 cm', '1 cm', '2 cm', '3 cm'), 'Piece' if edge_override is None else allowance_label(edge_override, ('0 cm', '0.5 cm', '1 cm', '2 cm', '3 cm')))))
             if edge and any(item.full() == edge.full() for seam in doc.seams for side in (0, 1) for item in seam.side(side)):
                 rows.append(('MERGE_PIECES', 'Merge sewn pieces', ''))
             if pattern and any(feature.get('type') == 'FOLD' for feature in pattern.features):
@@ -1487,6 +1499,8 @@ class MinimalCards:
         elif key.startswith('INSP_ALLOWANCE_'):
             distance = float(key.removeprefix('INSP_ALLOWANCE_').split()[0]) / 100
             self.run_edit(lambda: self.session.set_garment_allowance(distance), 'Seam allowance applied to every piece.')
+        elif key == 'EDGE_SEAM_MENU':
+            self.show_card('EDGE_SEAM', self.card_anchor)
         elif key.startswith('EDGE_ALLOWANCE_'):
             edge = self.session.segment
             if key == 'EDGE_ALLOWANCE_Piece':
@@ -1494,6 +1508,7 @@ class MinimalCards:
             else:
                 distance = float(key.removeprefix('EDGE_ALLOWANCE_').split()[0]) / 100
                 self.run_edit(lambda: self.session.set_edge_allowance(edge, distance), 'Edge allowance set.')
+            self.card_kind = None
         elif key.startswith('SET_SIZE_'):
             name = key.removeprefix('SET_SIZE_')
             scene.dd_size = '' if name == getattr(self.session.document, 'base_size', '') else name
@@ -2051,7 +2066,7 @@ class MinimalCards:
                     elif key != 'AVATAR_FIELD':
                         action = row[1] if key == 'MENU' else key
                         self.minimal_action(action)
-                        if not action.startswith(('LOAD_','LIBRARY_','PAGE_LIBRARY')) and action not in {'GARMENT_FABRIC_MENU', 'PIECE_FABRIC_MENU', 'PIECE_DENSITY_MENU', 'PIECE_SIMULATION_MENU', 'SCROLL_WEAR_OVER', 'NAME', 'REFERENCE_IMAGE', 'MENU_LIBRARY', 'MENU_GARMENT', 'TRACE_CALIBRATION', 'TRACE_POSITION', 'PATH_ACTIONS', *SUBMENUS} and not getattr(self, 'pending_transform', None):
+                        if not action.startswith(('LOAD_','LIBRARY_','PAGE_LIBRARY')) and action not in {'GARMENT_FABRIC_MENU', 'PIECE_FABRIC_MENU', 'PIECE_DENSITY_MENU', 'PIECE_SIMULATION_MENU', 'EDGE_SEAM_MENU', 'SCROLL_WEAR_OVER', 'NAME', 'REFERENCE_IMAGE', 'MENU_LIBRARY', 'MENU_GARMENT', 'TRACE_CALIBRATION', 'TRACE_POSITION', 'PATH_ACTIONS', *SUBMENUS} and not getattr(self, 'pending_transform', None):
                             self.card_kind = None
                     break
             return {'RUNNING_MODAL'}

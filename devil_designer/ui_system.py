@@ -23,7 +23,7 @@ except ImportError:
         def contains(self, x, y):
             return self.x <= x <= self.x + self.w and self.y <= y <= self.y + self.h
 
-MENU_CARDS = {'CANVAS_MENU', 'PIECE_SIMULATION', 'PIECE_DENSITY', 'PIECE_PLACEMENT', 'PIECE_CLONE', 'STARTERS', 'LIBRARY_TAGS',
+MENU_CARDS = {'CANVAS_MENU', 'PIECE_SIMULATION', 'PIECE_DENSITY', 'EDGE_SEAM', 'PIECE_PLACEMENT', 'PIECE_CLONE', 'STARTERS', 'LIBRARY_TAGS',
               'PIECE', 'EDGE', 'POINT', 'INTERNAL_EDGE', 'SEAM', 'ANCHOR', 'MULTI_SELECTION', 'FOLD', 'KEEP', 'SIMULATE'}
 BG_BASE = (0.098, 0.114, 0.133, 1.0)
 BG_ELEVATED = (0.188, 0.220, 0.251, 1.0)
