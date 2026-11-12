@@ -13,6 +13,10 @@ import devil_designer
 from devil_designer import editor,garment
 
 
+def base_scale():
+    return bpy.app.driver_namespace.get('dd_gui_base_scale', 1.0)
+
+
 def run_selection_native(op, passed):
     import math
     from devil_designer import curves, arrangement, arrangement_controls, live_panels
@@ -29,7 +33,7 @@ def run_selection_native(op, passed):
         passed.append('Native: ' + message)
 
     def fixture(sewn=False):
-        bpy.context.preferences.view.ui_scale = 1.0
+        bpy.context.preferences.view.ui_scale = base_scale()
         op.clear_interaction_references()
         op.cancel_transform()
         op.session = Session()
@@ -336,7 +340,7 @@ def run_selection_native(op, passed):
         check(not op.session.has_selection() and op.session.segment is None,
               'last edge toggle clears effective and legacy selection')
         for ui_scale in (1.0, 2.0):
-            bpy.context.preferences.view.ui_scale = ui_scale
+            bpy.context.preferences.view.ui_scale = ui_scale * base_scale()
             yield
             op.canvas_layout = op.make_layout()
             for zoom in (300, 600, 1200):
@@ -351,7 +355,7 @@ def run_selection_native(op, passed):
                     yield
                     check(op.session.selected_patterns == {first.id, second.id} and not op.session.selected_points,
                           f'UI scale {ui_scale:g}, zoom {zoom}, {"crossing" if reverse else "enclose"} selects two panels')
-        bpy.context.preferences.view.ui_scale = 1.0
+        bpy.context.preferences.view.ui_scale = base_scale()
         yield
         op.canvas_layout = op.make_layout()
         op.view.zoom = 600
@@ -497,7 +501,7 @@ def run_selection_native(op, passed):
         second.vertices[1].incoming = (-.02, .02)
         curved_midpoint = curves.at_length(op.session.document.edge_curve(op.session.document.edge(second.id, 0)), .5)
         for ui_scale in (1.0, 2.0):
-            bpy.context.preferences.view.ui_scale = ui_scale
+            bpy.context.preferences.view.ui_scale = ui_scale * base_scale()
             yield
             op.canvas_layout = op.make_layout()
             for zoom in (300, 600, 1200):
@@ -521,7 +525,7 @@ def run_selection_native(op, passed):
                                                  op.canvas_layout.canvas)
                     check(math.dist(op.session.get_pivot(), expected) < .0001,
                           f'UI scale {ui_scale:g}, zoom {zoom}, {label} pivot is within 0.1 mm')
-        bpy.context.preferences.view.ui_scale = 1.0
+        bpy.context.preferences.view.ui_scale = base_scale()
         op.canvas_layout = op.make_layout()
         op.start_set_pivot()
         post('MOUSEMOVE', 'NOTHING', world=(.25, .38))
@@ -598,7 +602,7 @@ def run_selection_native(op, passed):
 
     def check_panel_marquee():
         for ui_scale in (1.0, 2.0):
-            bpy.context.preferences.view.ui_scale = ui_scale
+            bpy.context.preferences.view.ui_scale = ui_scale * base_scale()
             yield
             op.canvas_layout = op.make_layout()
             for zoom in (300, 600, 1200):
@@ -614,7 +618,7 @@ def run_selection_native(op, passed):
                     yield
                     check(op.session.selected_patterns == {first.id, second.id} and not op.session.selected_points,
                           f'UI scale {ui_scale:g}, zoom {zoom}, {"crossing" if reverse else "enclose"} selects exactly two panels and zero points')
-        bpy.context.preferences.view.ui_scale = 1.0
+        bpy.context.preferences.view.ui_scale = base_scale()
         yield
         op.canvas_layout = op.make_layout()
         op.view.zoom = 600

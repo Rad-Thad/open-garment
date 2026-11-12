@@ -16,6 +16,27 @@ temporary = scratch / 'blender-temp'
 temporary.mkdir(exist_ok=True)
 bpy.context.preferences.filepaths.temporary_directory = str(temporary) + os.sep
 
+display = {}
+
+
+def normalize_display():
+    preferences = bpy.context.preferences
+    if 'base' not in display:
+        display['base'] = max(.5, preferences.view.ui_scale / preferences.system.ui_scale)
+        preferences.view.ui_scale = display['base']
+        bpy.app.driver_namespace['dd_gui_base_scale'] = display['base']
+        return .05
+    window = bpy.context.window_manager.windows[0]
+    area = next(item for item in window.screen.areas if item.type == 'VIEW_3D')
+    region = next(item for item in area.regions if item.type == 'WINDOW')
+    print(f'GUI ENV window={window.width}x{window.height} region={region.width}x{region.height} '
+          f'system_scale={preferences.system.ui_scale:.2f} view_scale={preferences.view.ui_scale:.2f}', flush=True)
+    return None
+
+
+if sys.platform == 'darwin':
+    bpy.app.timers.register(normalize_display, first_interval=0)
+
 test_name = sys.argv[-1] if len(sys.argv) > 1 and not sys.argv[-1].startswith('-') else "gui_preview"
 report_file = scratch / f"{test_name.replace('gui_', '').replace('.py', '')}-report.json"
 if "preview" in test_name:

@@ -223,7 +223,7 @@ def check_interaction_regressions(workspace, event, point, check):
             workspace._scene.dd_quality = 15
             before_load = {key: getattr(workspace._scene, key) for key in original_settings}
             workspace.library_items = [Path('regression.garment.json')]
-            with patch.object(library, 'load') as load:
+            with patch.object(library, 'entries', return_value=[Path('regression.garment.json')]), patch.object(library, 'load') as load:
                 workspace.minimal_action('LOAD_0')
                 check(workspace.card_kind=='LIBRARY_PREVIEW' and not load.called,
                       'selecting a library tile opens a preview without loading')

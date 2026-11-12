@@ -1,8 +1,9 @@
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from tools.dev import do_action_performance, run_cmd
+from tools.dev import do_action_performance, gui_command, run_cmd
 
 
 class DeveloperRunnerTests(unittest.TestCase):
@@ -41,3 +42,10 @@ class DeveloperRunnerTests(unittest.TestCase):
         result = SimpleNamespace(returncode=0, stdout='GUI TEST TIMED OUT waiting for report', stderr='')
         with patch('tools.dev.subprocess.run', return_value=result), patch('builtins.print'):
             self.assertFalse(run_cmd(['blender', 'tools/run_blender_gui.py']))
+
+    def test_gui_window_is_pinned_only_on_macos(self):
+        with patch('tools.dev.blender_path', return_value='blender'), patch.dict(os.environ, {'DD_GUI_WINDOW': '1920x1080'}):
+            with patch('tools.dev.sys.platform', 'darwin'):
+                self.assertEqual(gui_command('gui_preview')[3:8], ['--window-geometry', '0', '0', '1920', '1080'])
+            with patch('tools.dev.sys.platform', 'win32'):
+                self.assertNotIn('--window-geometry', gui_command('gui_preview'))

@@ -55,18 +55,43 @@ def do_tests():
     if not run_cmd([blender_path(), "--background", "--factory-startup", "--python-exit-code", "1", "--python", "tests/blender_gpu.py"],
                    desc="Blender Background: blender_gpu.py", env={'DD_SOLVER': 'GPU'}):
         return False
-    if not run_cmd([blender_path(), "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", "gui_core_workflow"],
-                   desc="In-Engine GUI (GPU solver): gui_core_workflow", env={'DD_SOLVER': 'GPU'}):
-        return False
+    for t in ["gui_core_workflow", "gui_live_grab", "gui_live_brush"]:
+        if not run_cmd(gui_command(t), desc=f"In-Engine GUI (GPU solver): {t}", env={'DD_SOLVER': 'GPU'}):
+            return False
 
     print("\n=== RUNNING REAL-BLENDER IN-ENGINE GUI SUITES ===")
     for t in ["gui_preview", "gui_silhouette", "gui_design", "gui_fast_flow", "gui_library", "gui_arrangement", "gui_arrangement_display", "gui_fit_map", "gui_avatar_field", "gui_viewport_sewing", "gui_core_workflow", "gui_editor_release", "gui_timeline_release", "gui_live_grab", "gui_live_brush", "gui_matrix", "gui_drafting_tools", "gui_refit", "gui_shortcut_scope"]:
-        if not run_cmd([blender_path(), "--enable-event-simulate", "--factory-startup", "--python", "tools/run_blender_gui.py", "--", t],
+        if not run_cmd(gui_command(t),
                        desc=f"In-Engine GUI: {t}"):
             return False
 
     print("ALL TESTS PASSED!\n")
     return True
+
+def gui_command(name):
+    command = [blender_path(), "--enable-event-simulate", "--factory-startup"]
+    if sys.platform == 'darwin':
+        width, height = os.environ.get('DD_GUI_WINDOW', '960x540').split('x')
+        command += ["--window-geometry", "0", "0", width, height]
+    return command + ["--python", "tools/run_blender_gui.py", "--", name]
+
+
+def do_gui(names):
+    failed = []
+    for name in names:
+        result = subprocess.run(gui_command(name), cwd=str(ROOT), capture_output=True, text=True,
+                                env=dict(child_environment(), DD_SOLVER=os.environ.get('DD_SOLVER', 'NODES')))
+        lines = result.stdout.splitlines()
+        passed = result.returncode == 0 and any(line.startswith('GUI TEST PASSED') for line in lines)
+        print(name, 'PASSED' if passed else 'FAILED')
+        for line in lines:
+            if line.startswith(('GUI ENV', 'GUI TEST PASSED')):
+                print('   ', line)
+        if not passed:
+            failed.append(name)
+            print('\n'.join(lines[-25:]))
+    return not failed
+
 
 def do_build():
     print("\n=== BUILDING & VALIDATING EXTENSION ===")
@@ -200,11 +225,12 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true", help="Test, build, sync, screenshot, and inspect")
     parser.add_argument("--clean", action="store_true", help="Delete disposable scratch artifacts without touching dist or source")
     parser.add_argument("--keep-scratch", action="store_true", help="Keep artifacts after success for manual inspection")
+    parser.add_argument('--gui', nargs='+', metavar='SUITE', help='Run the named in-engine GUI suites, continue past failures, and print each result')
     
     args = parser.parse_args(argv)
     if args.clean and args.keep_scratch:
         parser.error('--clean and --keep-scratch cannot be combined')
-    if not any([args.quick, args.test, args.build, args.shots, args.inspect, args.all, args.clean, args.arrangement_performance, args.action_performance]):
+    if not any([args.quick, args.test, args.build, args.shots, args.inspect, args.all, args.clean, args.arrangement_performance, args.action_performance, args.gui]):
         parser.print_help()
         return 0
         
@@ -212,6 +238,7 @@ def main(argv=None):
         (args.action_performance, lambda: do_action_performance(args.action_performance)),
         (args.arrangement_performance, lambda: do_arrangement_performance(args.arrangement_performance)),
         (args.quick, do_quick_tests),
+        (args.gui, lambda: do_gui(args.gui)),
         (args.test or args.all, do_tests),
         (args.build or args.all, do_build),
         (args.shots or args.all, do_screenshots),
